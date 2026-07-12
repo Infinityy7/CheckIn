@@ -7,7 +7,7 @@ import logging
 from abc import ABC, abstractmethod
 
 from config import MAX_AGENT_RETRIES
-from gemini_client import generate_text, is_fatal_error, parse_json_text
+from llm_client import generate_text, is_fatal_error, parse_json_text
 from ranking import rank_recommendations
 from schemas import AgentResult, Recommendation, TripPreferences
 
@@ -45,7 +45,7 @@ class BaseAgent(ABC):
         """Build the user message for this agent."""
 
     async def run(self, prefs: TripPreferences, context_brief: str) -> AgentResult:
-        """Call Gemini, validate the output, rank it, return the top 3."""
+        """Call the LLM, validate the output, rank it, return the top 3."""
         user_prompt = self.build_user_prompt(prefs, context_brief)
         last_error: Exception | None = None
 
@@ -57,7 +57,7 @@ class BaseAgent(ABC):
 
             try:
                 logger.info(
-                    "[%s] attempt %d/%d — calling Gemini with Google Search",
+                    "[%s] attempt %d/%d — calling OpenAI with web search",
                     self.agent_name, attempt, MAX_AGENT_RETRIES,
                 )
                 raw_text = await generate_text(
@@ -88,7 +88,7 @@ class BaseAgent(ABC):
         )
 
     def _parse_and_validate(self, raw_text: str) -> list[Recommendation]:
-        """Turn Gemini's JSON into Recommendation objects.
+        """Turn the LLM's JSON into Recommendation objects.
 
         Bad items get dropped one by one instead of failing the whole batch.
         Only errors out if fewer than 3 good ones survive.

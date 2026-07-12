@@ -6,7 +6,7 @@ import json
 import logging
 
 from config import MAX_AGENT_RETRIES
-from gemini_client import generate_text, is_fatal_error, parse_json_text
+from llm_client import generate_text, is_fatal_error, parse_json_text
 from prompts.itinerary import build_itinerary_prompt
 from schemas import Itinerary, Recommendation, TripPreferences
 
@@ -25,7 +25,7 @@ async def generate_itinerary(
     context_brief: str,
     selected_recommendations: list[Recommendation],
 ) -> Itinerary:
-    """Ask Gemini to build the itinerary from the user's picks.
+    """Ask the LLM to build the itinerary from the user's picks.
 
     Retries on bad JSON, asking for shorter output since the usual
     problem is the response getting cut off.

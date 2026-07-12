@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TravelBuddy</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: Arial, Helvetica, sans-serif;
+    background: #f4f4f4;
+    color: #222;
+    line-height: 1.5;
+  }
+
+  .wrap { max-width: 900px; margin: 0 auto; padding: 20px; }
+
+  header {
+    background: #1d4ed8;
+    color: #fff;
+    padding: 16px 0;
+    margin-bottom: 24px;
+  }
+  header .wrap { padding-top: 0; padding-bottom: 0; }
+  header h1 { font-size: 22px; }
+  header p { font-size: 14px; color: #bfdbfe; }
+
+  section {
+    background: #fff;
+    border: 1px solid #ccc;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  section h2 {
+    font-size: 17px;
+    margin-bottom: 14px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid #1d4ed8;
+  }
+
+  label { display: block; font-weight: bold; font-size: 14px; margin-bottom: 4px; }
+  input, select {
+    width: 100%;
+    padding: 8px;
+    border: 1px solid #999;
+    font-size: 14px;
+    font-family: inherit;
+    background: #fff;
+  }
+  .row { display: flex; gap: 14px; margin-bottom: 14px; flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 160px; }
+
+  .vibes { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+  .vibes label {
+    font-weight: normal;
+    border: 1px solid #999;
+    padding: 6px 12px;
+    cursor: pointer;
+    font-size: 14px;
+    background: #fff;
+  }
+  .vibes input { display: none; }
+  .vibes label.on { background: #1d4ed8; color: #fff; border-color: #1d4ed8; }
+
+  button {
+    background: #1d4ed8;
+    color: #fff;
+    border: none;
+    padding: 10px 22px;
+    font-size: 15px;
+    font-family: inherit;
+    cursor: pointer;
+  }
+  button:hover { background: #1e40af; }
+  button:disabled { background: #999; cursor: default; }
+
+  .error {
+    background: #dc2626;
+    color: #fff;
+    padding: 10px 14px;
+    margin-bottom: 14px;
+    font-size: 14px;
+    display: none;
+  }
+
+  .brief {
+    background: #fef9c3;
+    border: 1px solid #ca8a04;
+    padding: 12px;
+    font-size: 14px;
+    margin-bottom: 16px;
+  }
+
+  .agent-status { font-size: 14px; margin-bottom: 4px; }
+  .agent-status .dot { display: inline-block; width: 10px; height: 10px; margin-right: 6px; background: #999; }
+  .agent-status.working .dot { background: #ca8a04; }
+  .agent-status.done .dot { background: #16a34a; }
+  .agent-status.failed .dot { background: #dc2626; }
+
+  .agent-group { margin-top: 18px; }
+  .agent-group h3 { font-size: 15px; margin-bottom: 8px; }
+
+  .card {
+    border: 1px solid #ccc;
+    padding: 12px;
+    margin-bottom: 10px;
+    cursor: pointer;
+    background: #fff;
+  }
+  .card:hover { border-color: #1d4ed8; }
+  .card.selected { border: 2px solid #16a34a; background: #f0fdf4; }
+  .card .top { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+  .card .name { font-weight: bold; font-size: 15px; }
+  .card .badge {
+    background: #1d4ed8; color: #fff;
+    font-size: 12px; padding: 2px 8px;
+    white-space: nowrap;
+  }
+  .card .meta { font-size: 13px; color: #555; margin: 4px 0; }
+  .card .desc { font-size: 14px; margin-bottom: 4px; }
+  .card .why { font-size: 13px; color: #555; }
+  .card .pick { font-size: 13px; font-weight: bold; color: #16a34a; margin-top: 6px; }
+
+  .day {
+    border: 1px solid #ccc;
+    margin-bottom: 14px;
+  }
+  .day h3 {
+    background: #1d4ed8; color: #fff;
+    font-size: 15px; padding: 8px 12px;
+  }
+  .day .item {
+    padding: 10px 12px;
+    border-top: 1px solid #eee;
+    font-size: 14px;
+  }
+  .day .item .slot { font-weight: bold; color: #1d4ed8; font-size: 13px; }
+  .day .item .tip { color: #555; font-size: 13px; }
+
+  .hidden { display: none; }
+  .muted { color: #555; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <h1>TravelBuddy</h1>
+    <p>plan a trip with four research agents</p>
+  </div>
+</header>
+
+<div class="wrap">
+  <div id="errorBox" class="error"></div>
+
+  <!-- step 1: preferences -->
+  <section id="prefsSection">
+    <h2>1. Trip details</h2>
+    <div class="row">
+      <div>
+        <label for="destination">Destination</label>
+        <input id="destination" type="text" placeholder="e.g. Tokyo">
+      </div>
+      <div>
+        <label for="startDate">Start date</label>
+        <input id="startDate" type="date">
+      </div>
+      <div>
+        <label for="endDate">End date</label>
+        <input id="endDate" type="date">
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="budget">Budget</label>
+        <select id="budget">
+          <option value="budget">Budget</option>
+          <option value="moderate" selected>Moderate</option>
+          <option value="premium">Premium</option>
+          <option value="luxury">Luxury</option>
+        </select>
+      </div>
+      <div>
+        <label for="group">Group</label>
+        <select id="group">
+          <option value="solo">Solo</option>
+          <option value="couple">Couple</option>
+          <option value="friends">Friends</option>
+          <option value="family">Family</option>
+        </select>
+      </div>
+      <div>
+        <label for="travelers">Travelers</label>
+        <input id="travelers" type="number" min="1" max="50" value="2">
+      </div>
+    </div>
+    <label>Vibes (pick at least one)</label>
+    <div class="vibes" id="vibes"></div>
+    <button id="startBtn">Start research</button>
+  </section>
+
+  <!-- step 2: research + selection -->
+  <section id="researchSection" class="hidden">
+    <h2>2. Recommendations</h2>
+    <div id="brief" class="brief hidden"></div>
+    <div id="agentStatuses"></div>
+    <div id="results"></div>
+    <p class="muted" id="selectHint" style="margin-top:12px">
+      Click cards to select what you want in your itinerary.
+    </p>
+    <button id="itineraryBtn" class="hidden" disabled>Generate itinerary</button>
+  </section>
+
+  <!-- step 3: itinerary -->
+  <section id="itinerarySection" class="hidden">
+    <h2>3. Your itinerary</h2>
+    <div id="itinerary"></div>
+  </section>
+</div>
+
+<script>
+var API = "";  // same origin
+var VIBES = ["adventure", "culture", "food", "nightlife", "relaxation",
+             "nature", "shopping", "history", "romance", "family-friendly"];
+
+var tripId = null;
+var allRecs = {};      // id -> recommendation
+var selectedIds = {};  // id -> true
+
+// build the vibe buttons
+var vibesBox = document.getElementById("vibes");
+VIBES.forEach(function (vibe) {
+  var label = document.createElement("label");
+  label.textContent = vibe;
+  var cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.value = vibe;
+  label.appendChild(cb);
+  label.addEventListener("click", function (e) {
+    e.preventDefault();
+    cb.checked = !cb.checked;
+    label.classList.toggle("on", cb.checked);
+  });
+  vibesBox.appendChild(label);
+});
+
+function showError(msg) {
+  var box = document.getElementById("errorBox");
+  box.textContent = msg;
+  box.style.display = "block";
+}
+
+function clearError() {
+  document.getElementById("errorBox").style.display = "none";
+}
+
+// read a POST SSE stream and call onEvent for each data line
+async function readSSE(url, onEvent) {
+  var resp = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" } });
+  if (!resp.ok) {
+    var body = await resp.text();
+    throw new Error("HTTP " + resp.status + ": " + body);
+  }
+  var reader = resp.body.getReader();
+  var decoder = new TextDecoder();
+  var buffer = "";
+  while (true) {
+    var chunk = await reader.read();
+    if (chunk.done) break;
+    buffer += decoder.decode(chunk.value, { stream: true });
+    var parts = buffer.split("\n\n");
+    buffer = parts.pop();
+    for (var i = 0; i < parts.length; i++) {
+      var line = parts[i].trim();
+      if (line.indexOf("data: ") === 0) {
+        onEvent(JSON.parse(line.slice(6)));
+      }
+    }
+  }
+}
+
+// ---- step 1: submit preferences, start research ----
+
+document.getElementById("startBtn").addEventListener("click", async function () {
+  clearError();
+  var vibes = [];
+  vibesBox.querySelectorAll("input:checked").forEach(function (cb) { vibes.push(cb.value); });
+
+  var prefs = {
+    destination: document.getElementById("destination").value.trim(),
+    start_date: document.getElementById("startDate").value,
+    end_date: document.getElementById("endDate").value,
+    budget_tier: document.getElementById("budget").value,
+    vibes: vibes,
+    group_type: document.getElementById("group").value,
+    num_travelers: parseInt(document.getElementById("travelers").value, 10)
+  };
+
+  if (!prefs.destination || !prefs.start_date || !prefs.end_date) {
+    showError("Please fill in destination and both dates.");
+    return;
+  }
+  if (vibes.length === 0) {
+    showError("Pick at least one vibe.");
+    return;
+  }
+
+  var btn = this;
+  btn.disabled = true;
+  btn.textContent = "Creating trip...";
+
+  try {
+    var resp = await fetch(API + "/api/trip/preferences", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(prefs)
+    });
+    var data = await resp.json();
+    if (!resp.ok) {
+      throw new Error(JSON.stringify(data.detail || data));
+    }
+    tripId = data.trip_id;
+    document.getElementById("researchSection").classList.remove("hidden");
+    btn.textContent = "Researching...";
+    await runResearch();
+  } catch (err) {
+    showError(err.message);
+    btn.disabled = false;
+    btn.textContent = "Start research";
+  }
+});
+
+var AGENTS = ["Accommodation Agent", "Activities Agent", "Restaurant Agent", "Transport Agent"];
+
+async function runResearch() {
+  var statuses = document.getElementById("agentStatuses");
+  statuses.innerHTML = "";
+  var statusEls = {};
+  AGENTS.forEach(function (name) {
+    var div = document.createElement("div");
+    div.className = "agent-status working";
+    div.innerHTML = '<span class="dot"></span>' + name + " — searching...";
+    statuses.appendChild(div);
+    statusEls[name] = div;
+  });
+
+  try {
+    await readSSE(API + "/api/trip/" + tripId + "/research", function (ev) {
+      if (ev.event === "context_brief_generated") {
+        var brief = document.getElementById("brief");
+        brief.textContent = ev.brief;
+        brief.classList.remove("hidden");
+      } else if (ev.event === "agent_completed") {
+        statusEls[ev.agent].className = "agent-status done";
+        statusEls[ev.agent].innerHTML = '<span class="dot"></span>' + ev.agent + " — done";
+        renderAgentResults(ev.agent, ev.results);
+      } else if (ev.event === "agent_failed") {
+        statusEls[ev.agent].className = "agent-status failed";
+        statusEls[ev.agent].innerHTML = '<span class="dot"></span>' + ev.agent + " — failed";
+      } else if (ev.event === "error") {
+        showError("Research failed: " + ev.error);
+      } else if (ev.event === "all_complete") {
+        document.getElementById("itineraryBtn").classList.remove("hidden");
+        var btn = document.getElementById("startBtn");
+        btn.textContent = "Research complete";
+      }
+    });
+  } catch (err) {
+    showError(err.message);
+    var btn = document.getElementById("startBtn");
+    btn.disabled = false;
+    btn.textContent = "Start research";
+  }
+}
+
+function renderAgentResults(agentName, results) {
+  var group = document.createElement("div");
+  group.className = "agent-group";
+  var h = document.createElement("h3");
+  h.textContent = agentName;
+  group.appendChild(h);
+
+  results.forEach(function (rec) {
+    allRecs[rec.id] = rec;
+    var card = document.createElement("div");
+    card.className = "card";
+    card.dataset.id = rec.id;
+
+    var reviews = rec.review_count ? " (" + rec.review_count + " reviews)" : "";
+    card.innerHTML =
+      '<div class="top">' +
+        '<span class="name">' + esc(rec.name) + '</span>' +
+        '<span class="badge">#' + rec.rank + ' · score ' + rec.score.toFixed(2) + '</span>' +
+      '</div>' +
+      '<div class="meta">' + esc(rec.location) + ' · ' + esc(rec.estimated_cost) +
+        ' · ' + rec.rating + '/5' + reviews + '</div>' +
+      '<div class="desc">' + esc(rec.description) + '</div>' +
+      '<div class="why">Why: ' + esc(rec.reasoning) + '</div>' +
+      '<div class="pick hidden">SELECTED</div>';
+
+    card.addEventListener("click", function () {
+      var id = card.dataset.id;
+      if (selectedIds[id]) {
+        delete selectedIds[id];
+        card.classList.remove("selected");
+        card.querySelector(".pick").classList.add("hidden");
+      } else {
+        selectedIds[id] = true;
+        card.classList.add("selected");
+        card.querySelector(".pick").classList.remove("hidden");
+      }
+      var count = Object.keys(selectedIds).length;
+      var btn = document.getElementById("itineraryBtn");
+      btn.disabled = count === 0;
+      btn.textContent = count === 0 ? "Generate itinerary"
+                                    : "Generate itinerary (" + count + " selected)";
+    });
+
+    group.appendChild(card);
+  });
+
+  document.getElementById("results").appendChild(group);
+}
+
+// ---- step 3: save selections, generate itinerary ----
+
+document.getElementById("itineraryBtn").addEventListener("click", async function () {
+  clearError();
+  var btn = this;
+  btn.disabled = true;
+  btn.textContent = "Saving selections...";
+
+  try {
+    var resp = await fetch(API + "/api/trip/" + tripId + "/select", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ selections: Object.keys(selectedIds) })
+    });
+    var data = await resp.json();
+    if (!resp.ok) throw new Error(JSON.stringify(data.detail || data));
+
+    btn.textContent = "Building itinerary (takes a minute)...";
+    document.getElementById("itinerarySection").classList.remove("hidden");
+
+    await readSSE(API + "/api/trip/" + tripId + "/itinerary", function (ev) {
+      if (ev.event === "itinerary_complete") {
+        renderItinerary(ev.itinerary);
+        btn.textContent = "Itinerary ready below";
+      } else if (ev.event === "itinerary_failed") {
+        showError("Itinerary failed: " + ev.error);
+        btn.disabled = false;
+        btn.textContent = "Generate itinerary (retry)";
+      }
+    });
+  } catch (err) {
+    showError(err.message);
+    btn.disabled = false;
+    btn.textContent = "Generate itinerary (retry)";
+  }
+});
+
+function renderItinerary(it) {
+  var box = document.getElementById("itinerary");
+  box.innerHTML = "";
+
+  var title = document.createElement("p");
+  title.innerHTML = "<strong>" + esc(it.trip_title) + "</strong><br>" + esc(it.trip_summary);
+  title.style.marginBottom = "14px";
+  box.appendChild(title);
+
+  it.days.forEach(function (day) {
+    var dayDiv = document.createElement("div");
+    dayDiv.className = "day";
+    var h = document.createElement("h3");
+    h.textContent = "Day " + day.day_number + " — " + day.theme + " (" + day.date + ")";
+    dayDiv.appendChild(h);
+
+    day.items.forEach(function (item) {
+      var itemDiv = document.createElement("div");
+      itemDiv.className = "item";
+      var tip = item.tip ? '<div class="tip">Tip: ' + esc(item.tip) + "</div>" : "";
+      itemDiv.innerHTML =
+        '<div class="slot">' + esc(item.time_slot) + '</div>' +
+        '<strong>' + esc(item.title) + '</strong> · ' + esc(item.cost_estimate) +
+        '<div>' + esc(item.description) + '</div>' + tip;
+      dayDiv.appendChild(itemDiv);
+    });
+
+    box.appendChild(dayDiv);
+  });
+
+  document.getElementById("itinerarySection").scrollIntoView({ behavior: "smooth" });
+}
+
+// basic html escaping so LLM text can't inject markup
+function esc(s) {
+  var d = document.createElement("div");
+  d.textContent = s == null ? "" : String(s);
+  return d.innerHTML;
+}
+</script>
+</body>
+</html>

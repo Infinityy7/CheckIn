@@ -6,9 +6,12 @@ import json
 import logging
 import time
 
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from config import ALLOWED_ORIGINS, LOG_LEVEL
 from itinerary import generate_itinerary
@@ -129,10 +132,10 @@ async def research_trip(trip_id: str):
                     add_agent_result(trip_id, agent_result)
                 elif event["event"] == "agent_failed":
                     add_research_error(trip_id, event["error"])
+                elif event["event"] == "all_complete":
+                    event["trip_id"] = trip_id  # orchestrator already sends this one
 
                 yield _sse(event)
-
-            yield _sse({"event": "all_complete", "trip_id": trip_id})
         except Exception as exc:
             # response already started, so send an error event instead of just dying
             logger.error("Research stream failed: %s", exc, exc_info=True)
@@ -248,6 +251,10 @@ async def get_trip_state(trip_id: str) -> TripState:
 def _sse(data: dict) -> str:
     """Format a dict as an SSE data line."""
     return f"data: {json.dumps(data)}\n\n"
+
+
+# serve the frontend, mounted last so /api routes win
+app.mount("/", StaticFiles(directory=Path(__file__).parent / "static", html=True))
 
 
 if __name__ == "__main__":

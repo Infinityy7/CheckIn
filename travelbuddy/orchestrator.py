@@ -8,7 +8,7 @@ from typing import AsyncGenerator
 
 from agents import AccommodationAgent, ActivitiesAgent, RestaurantAgent, TransportAgent
 from agents.base import BaseAgent
-from gemini_client import generate_text
+from llm_client import generate_text
 from prompts.context_brief import build_context_brief_prompt
 from schemas import AgentResult, TripPreferences
 
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 async def generate_context_brief(prefs: TripPreferences) -> str:
-    """Use Gemini to produce a shared trip context paragraph for all agents."""
+    """Produce a shared trip context paragraph for all agents."""
     prompt = build_context_brief_prompt(prefs.model_dump_json(indent=2))
 
     logger.info("Generating trip context brief...")
@@ -55,7 +55,7 @@ async def run_agents_streaming(
 ) -> AsyncGenerator[dict, None]:
     """Run all agents in parallel and yield SSE-style event dicts as each finishes.
 
-    gemini_client caps how many API calls run at once, so launching
+    llm_client caps how many API calls run at once, so launching
     all agents together is fine.
 
     Events yielded:
