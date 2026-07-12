@@ -25,7 +25,7 @@ def build_user_prompt(prefs_json: str, context_brief: str) -> str:
 ## Your Task
 Search the web for the best activities and experiences for this trip. Find REAL, currently available things to do.
 
-Research and recommend exactly 3 activities/experiences, ranked from best to good. Aim for a MIX:
+Research and recommend exactly 5 activity/experience candidates (our system will rank them and keep the best 3). Aim for a MIX:
 - At least one iconic/must-do experience for the destination
 - At least one unique or lesser-known gem that fits the traveler's vibes
 - Consider the group type when selecting activity intensity and style
@@ -45,7 +45,10 @@ You MUST respond with valid JSON in exactly this format, with no other text befo
       "description": "2-3 specific, compelling sentences about the experience. Paint a picture of what it feels like to do this.",
       "reasoning": "Why this activity is perfect for this specific traveler/group and their stated vibes.",
       "estimated_cost": "$X-$Y per person",
+      "cost_min": 25,
+      "cost_max": 60,
       "rating": 4.5,
+      "review_count": 1200,
       "location": "Area/Neighborhood, City",
       "image_search_query": "Activity Name City",
       "metadata": {{

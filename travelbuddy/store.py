@@ -3,16 +3,30 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
+from config import TRIP_TTL_HOURS
 from schemas import AgentResult, Itinerary, TripPreferences, TripState
 
 # Simple dict-backed store, keyed by trip_id
 _trips: dict[str, TripState] = {}
 
 
+def _purge_old_trips() -> None:
+    # toss old trips so the dict doesn't grow forever
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=TRIP_TTL_HOURS)
+    expired = []
+    for trip_id, state in _trips.items():
+        created = datetime.fromisoformat(state.created_at)
+        if created < cutoff:
+            expired.append(trip_id)
+    for trip_id in expired:
+        del _trips[trip_id]
+
+
 def create_trip(prefs: TripPreferences) -> TripState:
     """Create a new trip and return its state."""
+    _purge_old_trips()
     trip_id = str(uuid.uuid4())
     state = TripState(
         trip_id=trip_id,
@@ -31,6 +45,21 @@ def get_trip(trip_id: str) -> TripState | None:
 def set_context_brief(trip_id: str, brief: str) -> None:
     """Store the generated context brief."""
     _trips[trip_id].context_brief = brief
+
+
+def start_research(trip_id: str) -> None:
+    # mark research as running and wipe old results,
+    # so re-running /research replaces instead of duplicating
+    state = _trips[trip_id]
+    state.research_in_progress = True
+    state.research_results = []
+    state.research_errors = []
+
+
+def finish_research(trip_id: str) -> None:
+    state = _trips.get(trip_id)
+    if state is not None:
+        state.research_in_progress = False
 
 
 def add_agent_result(trip_id: str, result: AgentResult) -> None:

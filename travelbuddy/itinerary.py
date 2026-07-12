@@ -5,10 +5,8 @@ from __future__ import annotations
 import json
 import logging
 
-from google import genai
-from google.genai import types
-
-from config import GEMINI_API_KEY, GEMINI_MODEL, GEMINI_FALLBACK_MODEL, MAX_AGENT_RETRIES
+from config import MAX_AGENT_RETRIES
+from gemini_client import generate_text, is_fatal_error, parse_json_text
 from prompts.itinerary import build_itinerary_prompt
 from schemas import Itinerary, Recommendation, TripPreferences
 
@@ -27,12 +25,11 @@ async def generate_itinerary(
     context_brief: str,
     selected_recommendations: list[Recommendation],
 ) -> Itinerary:
-    """Call Gemini to produce a structured itinerary from the user's selections.
+    """Ask Gemini to build the itinerary from the user's picks.
 
-    Retries up to MAX_AGENT_RETRIES times if JSON parsing or validation fails.
+    Retries on bad JSON, asking for shorter output since the usual
+    problem is the response getting cut off.
     """
-    client = genai.Client(api_key=GEMINI_API_KEY)
-
     recs_json = json.dumps(
         [rec.model_dump() for rec in selected_recommendations], indent=2
     )
@@ -40,54 +37,32 @@ async def generate_itinerary(
         prefs.model_dump_json(indent=2), context_brief, recs_json
     )
 
+    max_attempts = MAX_AGENT_RETRIES + 1  # big responses fail more, allow one extra try
     prompt = user_prompt
     last_error: Exception | None = None
 
-    max_retries = MAX_AGENT_RETRIES + 1  # extra retry for large JSON responses
-    for attempt in range(1, max_retries + 1):
-        logger.info("Itinerary generation attempt %d/%d", attempt, MAX_AGENT_RETRIES)
-
-        # Try primary model, fall back on 503
-        raw_text = None
-        for model in [GEMINI_MODEL, GEMINI_FALLBACK_MODEL]:
-            try:
-                response = await client.aio.models.generate_content(
-                    model=model,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        system_instruction=ITINERARY_SYSTEM,
-                        max_output_tokens=16384,
-                        temperature=0.7,
-                    ),
-                )
-                raw_text = response.text.strip()
-                break
-            except Exception as exc:
-                if "503" in str(exc) or "UNAVAILABLE" in str(exc):
-                    logger.warning("Itinerary: %s overloaded, trying fallback...", model)
-                    import asyncio
-                    await asyncio.sleep(1)
-                    continue
-                raise
-
-        if not raw_text:
-            raise RuntimeError("All Gemini models unavailable")
+    for attempt in range(1, max_attempts + 1):
+        logger.info("Itinerary generation attempt %d/%d", attempt, max_attempts)
 
         try:
-            # Strip markdown fences if present
-            text = raw_text
-            if text.startswith("```"):
-                text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-            if text.endswith("```"):
-                text = text[:-3].strip()
-
-            data = json.loads(text)
+            raw_text = await generate_text(
+                prompt,
+                system_instruction=ITINERARY_SYSTEM,
+                max_output_tokens=16384,
+                temperature=0.5,
+            )
+            data = parse_json_text(raw_text)
             itinerary = Itinerary(**data)
-            logger.info("Itinerary generated: '%s' with %d days", itinerary.trip_title, len(itinerary.days))
+            logger.info(
+                "Itinerary generated: '%s' with %d days",
+                itinerary.trip_title, len(itinerary.days),
+            )
             return itinerary
         except Exception as exc:
+            if is_fatal_error(exc):
+                raise
             last_error = exc
-            logger.warning("Itinerary parsing failed on attempt %d: %s", attempt, exc)
+            logger.warning("Itinerary attempt %d failed: %s", attempt, exc)
             prompt = (
                 user_prompt
                 + f"\n\nIMPORTANT: Your previous response failed: {exc}. "
@@ -96,4 +71,4 @@ async def generate_itinerary(
                 "Use 4-5 items per day max. Respond with ONLY valid JSON, no markdown fences."
             )
 
-    raise RuntimeError(f"Itinerary generation failed after {max_retries} attempts. Last error: {last_error}")
+    raise RuntimeError(f"Itinerary generation failed after {max_attempts} attempts. Last error: {last_error}")

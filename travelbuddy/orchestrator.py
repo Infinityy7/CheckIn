@@ -6,46 +6,26 @@ import asyncio
 import logging
 from typing import AsyncGenerator
 
-from google import genai
-from google.genai import types
-
 from agents import AccommodationAgent, ActivitiesAgent, RestaurantAgent, TransportAgent
 from agents.base import BaseAgent
-from config import GEMINI_API_KEY, GEMINI_MODEL, GEMINI_FALLBACK_MODEL
+from gemini_client import generate_text
 from prompts.context_brief import build_context_brief_prompt
-from schemas import AgentResult, OrchestratorResult, TripPreferences
+from schemas import AgentResult, TripPreferences
 
 logger = logging.getLogger(__name__)
 
 
 async def generate_context_brief(prefs: TripPreferences) -> str:
     """Use Gemini to produce a shared trip context paragraph for all agents."""
-    client = genai.Client(api_key=GEMINI_API_KEY)
     prompt = build_context_brief_prompt(prefs.model_dump_json(indent=2))
 
     logger.info("Generating trip context brief...")
-    brief = None
-    for model in [GEMINI_MODEL, GEMINI_FALLBACK_MODEL]:
-        try:
-            response = await client.aio.models.generate_content(
-                model=model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    max_output_tokens=512,
-                    temperature=0.7,
-                ),
-            )
-            brief = response.text.strip()
-            break
-        except Exception as exc:
-            if "503" in str(exc) or "UNAVAILABLE" in str(exc):
-                logger.warning("Context brief: %s overloaded, trying fallback...", model)
-                await asyncio.sleep(1)
-                continue
-            raise
-
-    if not brief:
-        raise RuntimeError("All Gemini models unavailable")
+    brief = await generate_text(
+        prompt,
+        max_output_tokens=512,
+        temperature=0.7,  # it's prose, a bit of creativity is fine
+    )
+    brief = brief.strip()
     logger.info("Context brief: %s", brief)
     return brief
 
@@ -69,48 +49,14 @@ def _get_agents() -> list[BaseAgent]:
     ]
 
 
-async def run_all_agents(prefs: TripPreferences) -> OrchestratorResult:
-    """Generate the context brief, then run all 4 agents in parallel.
-
-    Handles partial failures: if some agents fail, the successful results are
-    still returned alongside a list of error messages.
-    """
-    context_brief = await generate_context_brief(prefs)
-    agents = _get_agents()
-
-    logger.info("Launching %d agents in parallel...", len(agents))
-    raw_results = await asyncio.gather(
-        *[_run_agent(agent, prefs, context_brief) for agent in agents]
-    )
-
-    agent_results: list[AgentResult] = []
-    errors: list[str] = []
-
-    for result in raw_results:
-        if isinstance(result, AgentResult):
-            agent_results.append(result)
-        else:
-            errors.append(result)
-
-    if errors:
-        logger.warning("Some agents failed: %s", errors)
-    logger.info(
-        "Orchestrator complete: %d succeeded, %d failed",
-        len(agent_results), len(errors),
-    )
-
-    return OrchestratorResult(
-        trip_context_brief=context_brief,
-        agent_results=agent_results,
-        errors=errors,
-    )
-
-
 async def run_agents_streaming(
     prefs: TripPreferences,
     context_brief: str,
 ) -> AsyncGenerator[dict, None]:
     """Run all agents in parallel and yield SSE-style event dicts as each finishes.
+
+    gemini_client caps how many API calls run at once, so launching
+    all agents together is fine.
 
     Events yielded:
       {"event": "agent_started", "agent": "<name>"}
@@ -120,17 +66,13 @@ async def run_agents_streaming(
     """
     agents = _get_agents()
 
-    async def _wrapped(agent: BaseAgent, delay: float) -> tuple[BaseAgent, AgentResult | str]:
-        if delay > 0:
-            await asyncio.sleep(delay)
+    async def _wrapped(agent: BaseAgent) -> tuple[BaseAgent, AgentResult | str]:
         return agent, await _run_agent(agent, prefs, context_brief)
 
-    # Emit all started events first
     for agent in agents:
         yield {"event": "agent_started", "agent": agent.agent_name}
 
-    # Stagger launches by 1s each to avoid Gemini rate limits
-    tasks = [asyncio.create_task(_wrapped(agent, i * 1.0)) for i, agent in enumerate(agents)]
+    tasks = [asyncio.create_task(_wrapped(agent)) for agent in agents]
 
     for coro in asyncio.as_completed(tasks):
         agent, result = await coro

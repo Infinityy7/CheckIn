@@ -7,7 +7,7 @@ from datetime import date
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # --- Input schemas ---
@@ -34,15 +34,31 @@ ALLOWED_VIBES = [
 ]
 
 
+MAX_TRIP_DAYS = 30
+
+
 class TripPreferences(BaseModel):
     """User-submitted trip preferences that drive all agent research."""
-    destination: str = Field(..., description="City or region to visit")
+    destination: str = Field(..., min_length=1, description="City or region to visit")
     start_date: date
     end_date: date
     budget_tier: BudgetTier
     vibes: list[str] = Field(..., description="Interest tags from the allowed set")
     group_type: GroupType
-    num_travelers: int = Field(..., ge=1)
+    num_travelers: int = Field(..., ge=1, le=50)
+
+    @model_validator(mode="after")
+    def check_dates_and_vibes(self) -> "TripPreferences":
+        if self.end_date < self.start_date:
+            raise ValueError("end_date must be on or after start_date")
+        if (self.end_date - self.start_date).days > MAX_TRIP_DAYS:
+            raise ValueError(f"Trips longer than {MAX_TRIP_DAYS} days are not supported")
+        if not self.vibes:
+            raise ValueError("At least one vibe is required")
+        for vibe in self.vibes:
+            if vibe not in ALLOWED_VIBES:
+                raise ValueError(f"Unknown vibe '{vibe}'. Allowed vibes: {ALLOWED_VIBES}")
+        return self
 
 
 # --- Agent output schemas ---
@@ -54,11 +70,19 @@ class Recommendation(BaseModel):
     category: str = Field(..., description="hotel | activity | restaurant | transport")
     description: str = Field(..., description="2-3 compelling, specific sentences")
     reasoning: str = Field(..., description="Why this fits the user's preferences")
-    estimated_cost: str = Field(..., description="Price range or estimate")
+    estimated_cost: str = Field(..., description="Human-readable price range, e.g. '$120-$180 per night'")
+    cost_min: float = Field(0, ge=0, description="Low end of the cost estimate in USD")
+    cost_max: float = Field(0, ge=0, description="High end of the cost estimate in USD")
     rating: float = Field(..., ge=0, le=5, description="Rating out of 5 from web research")
+    review_count: int = Field(0, ge=0, description="Approximate number of reviews behind the rating")
     location: str = Field(..., description="Neighborhood or area within destination")
     image_search_query: str = Field(..., description="Query to find a representative photo")
     metadata: dict = Field(default_factory=dict, description="Agent-specific extra info")
+
+    # these get filled in by ranking.py, not the LLM
+    rank: int = Field(0, description="1 = best. Assigned by our ranking algorithm, not the LLM")
+    score: float = Field(0.0, description="Composite 0..1 score from the ranking algorithm")
+    score_breakdown: dict = Field(default_factory=dict, description="Per-signal scores: rating/vibes/budget/total")
 
 
 class AgentResult(BaseModel):
@@ -106,17 +130,6 @@ class Itinerary(BaseModel):
 
 # --- API request/response wrappers ---
 
-class SelectionsRequest(BaseModel):
-    """User's selected recommendations for itinerary generation."""
-    preferences: TripPreferences
-    selected_recommendation_ids: list[str] = Field(
-        ..., description="UUIDs of chosen recommendations"
-    )
-    all_recommendations: list[Recommendation] = Field(
-        ..., description="Full recommendation objects from the orchestrator"
-    )
-
-
 class SelectionsInput(BaseModel):
     """POST body for the /select endpoint."""
     selections: list[str] = Field(..., description="List of recommendation IDs the user picked")
@@ -131,4 +144,5 @@ class TripState(BaseModel):
     research_errors: Optional[list[str]] = None
     selections: Optional[list[str]] = None
     itinerary: Optional[Itinerary] = None
+    research_in_progress: bool = False
     created_at: str

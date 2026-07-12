@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from config import LOG_LEVEL
+from config import ALLOWED_ORIGINS, LOG_LEVEL
 from itinerary import generate_itinerary
 from orchestrator import generate_context_brief, run_agents_streaming
 from schemas import (
@@ -25,11 +25,13 @@ from store import (
     add_agent_result,
     add_research_error,
     create_trip,
+    finish_research,
     get_all_recommendations,
     get_trip,
     set_context_brief,
     set_itinerary,
     set_selections,
+    start_research,
 )
 
 # --- Logging ---
@@ -48,7 +50,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -103,27 +105,40 @@ async def research_trip(trip_id: str):
     if state is None:
         raise HTTPException(status_code=404, detail=f"Trip {trip_id} not found")
 
+    if state.research_in_progress:
+        raise HTTPException(status_code=409, detail="Research is already running for this trip")
+
+    # wipes old results so a re-run doesn't duplicate them
+    start_research(trip_id)
+
     async def event_stream():
-        # Generate context brief first
-        context_brief = await generate_context_brief(state.preferences)
-        set_context_brief(trip_id, context_brief)
+        try:
+            # Generate context brief first
+            context_brief = await generate_context_brief(state.preferences)
+            set_context_brief(trip_id, context_brief)
 
-        yield _sse({"event": "context_brief_generated", "brief": context_brief})
+            yield _sse({"event": "context_brief_generated", "brief": context_brief})
 
-        # Stream agent results as each completes
-        async for event in run_agents_streaming(state.preferences, context_brief):
-            if event["event"] == "agent_completed":
-                agent_result = AgentResult(
-                    agent_name=event["agent"],
-                    recommendations=[Recommendation(**r) for r in event["results"]],
-                )
-                add_agent_result(trip_id, agent_result)
-            elif event["event"] == "agent_failed":
-                add_research_error(trip_id, event["error"])
+            # Stream agent results as each completes
+            async for event in run_agents_streaming(state.preferences, context_brief):
+                if event["event"] == "agent_completed":
+                    agent_result = AgentResult(
+                        agent_name=event["agent"],
+                        recommendations=[Recommendation(**r) for r in event["results"]],
+                    )
+                    add_agent_result(trip_id, agent_result)
+                elif event["event"] == "agent_failed":
+                    add_research_error(trip_id, event["error"])
 
-            yield _sse(event)
+                yield _sse(event)
 
-        yield _sse({"event": "all_complete", "trip_id": trip_id})
+            yield _sse({"event": "all_complete", "trip_id": trip_id})
+        except Exception as exc:
+            # response already started, so send an error event instead of just dying
+            logger.error("Research stream failed: %s", exc, exc_info=True)
+            yield _sse({"event": "error", "error": str(exc)})
+        finally:
+            finish_research(trip_id)
 
     return StreamingResponse(
         event_stream(),

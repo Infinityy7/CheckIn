@@ -25,7 +25,7 @@ def build_user_prompt(prefs_json: str, context_brief: str) -> str:
 ## Your Task
 Search the web for the best dining experiences for this trip. Find REAL restaurants and food experiences that currently exist and are open.
 
-Research and recommend exactly 3 dining options, ranked from best to good. Aim for VARIETY:
+Research and recommend exactly 5 dining candidates (our system will rank them and keep the best 3). Aim for VARIETY:
 - A range of dining styles (not three sit-down restaurants — mix in street food, markets, or unique food experiences)
 - A range of price points within the budget tier
 - A range of meal types (don't recommend three dinner spots)
@@ -45,7 +45,10 @@ You MUST respond with valid JSON in exactly this format, with no other text befo
       "description": "2-3 sentences that make the reader hungry. Mention specific dishes, the atmosphere, and what makes this place special.",
       "reasoning": "Why this dining experience fits this traveler's trip style, budget, and mood.",
       "estimated_cost": "$X-$Y per person for a meal",
+      "cost_min": 15,
+      "cost_max": 40,
       "rating": 4.5,
+      "review_count": 2300,
       "location": "Neighborhood, City",
       "image_search_query": "Restaurant Name City food",
       "metadata": {{

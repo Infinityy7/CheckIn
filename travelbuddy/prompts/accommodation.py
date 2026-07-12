@@ -24,7 +24,7 @@ def build_user_prompt(prefs_json: str, context_brief: str) -> str:
 ## Your Task
 Search the web for the best accommodation options for this trip. Find REAL, currently operating places to stay.
 
-Research and recommend exactly 3 accommodation options, ranked from best to good. For each:
+Research and recommend exactly 5 accommodation candidates (our system will rank them and keep the best 3). For each:
 1. Search for real hotels/stays in the destination that match the budget tier and group type
 2. Consider the neighborhood and its relevance to the traveler's vibes/interests
 3. Check recent reviews and ratings
@@ -39,7 +39,10 @@ You MUST respond with valid JSON in exactly this format, with no other text befo
       "description": "2-3 specific, compelling sentences about the property. Mention real details like room types, standout amenities, or unique features.",
       "reasoning": "Why this property is ideal for this specific traveler/group and their stated interests.",
       "estimated_cost": "$X-$Y per night",
+      "cost_min": 120,
+      "cost_max": 180,
       "rating": 4.5,
+      "review_count": 850,
       "location": "Neighborhood Name, City",
       "image_search_query": "Property Name City exterior",
       "metadata": {{

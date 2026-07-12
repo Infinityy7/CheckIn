@@ -26,7 +26,7 @@ def build_user_prompt(prefs_json: str, context_brief: str) -> str:
 ## Your Task
 Search the web for the best transport strategies for getting around this destination. Research CURRENT options, prices, and practical tips.
 
-Recommend exactly 3 transport STRATEGIES (not individual vehicles), ranked from best to good. Each strategy should be a complete approach to mobility during this trip. Consider:
+Recommend exactly 5 transport STRATEGY candidates (not individual vehicles — our system will rank them and keep the best 3). Each strategy should be a complete approach to mobility during this trip. Consider:
 - Airport/station to city transfer
 - Daily getting-around within the city
 - Options for reaching day-trip destinations if relevant
@@ -48,7 +48,10 @@ You MUST respond with valid JSON in exactly this format, with no other text befo
       "description": "2-3 sentences describing this transport strategy holistically. Cover arrival, daily movement, and any special considerations.",
       "reasoning": "Why this strategy is ideal for this group's budget, size, and travel style.",
       "estimated_cost": "$X-$Y total for the trip duration",
+      "cost_min": 8,
+      "cost_max": 20,
       "rating": 4.5,
+      "review_count": 500,
       "location": "Citywide / relevant areas",
       "image_search_query": "City Name public transport metro",
       "metadata": {{
