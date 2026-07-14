@@ -5,3 +5,10 @@ travelbuddy/data/
 .env
 .claude-flow/
 .pytest_cache/
+node_modules/
+test-results/
+playwright-report/
+*.tsbuildinfo
+*.db-shm
+*.db-wal
+travelbuddy/ruvector.db

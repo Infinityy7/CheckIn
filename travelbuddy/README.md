@@ -1,182 +1,100 @@
 # TravelBuddy
 
-AI-powered travel planning API. Four specialist agents research destinations using Claude with web search, then a central LLM assembles your selections into a day-by-day itinerary.
+TravelBuddy is an AI travel command center. Four specialist agents research transportation, accommodation, activities, and food in parallel; a profile-aware ranker returns the top three choices per category; the selected options become a day-by-day itinerary.
+
+The frontend is React 19 + TypeScript + Vite and is served by the existing FastAPI application. The original backend pipeline remains intact.
 
 ## Setup
 
+Requirements: Python 3.11+, Node.js 20+, and an OpenAI API key.
+
 ```bash
 cd travelbuddy
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-# Add your Anthropic API key to .env
+cd frontend
+npm install
+npm run build
+cd ..
 ```
 
-## Run
+Add `OPENAI_API_KEY` to `.env`, then run:
 
 ```bash
-python main.py
-# or
-uvicorn main:app --reload --port 8000
+.venv/bin/uvicorn main:app --reload --port 8000
 ```
 
-API docs at `http://localhost:8000/docs`.
+Open `http://127.0.0.1:8000`. API documentation is at `http://127.0.0.1:8000/docs`.
 
-## API Flow
-
-The app works in 4 steps:
-
-1. **Submit preferences** → get a `trip_id`
-2. **Research** → 4 agents search the web in parallel, results stream via SSE
-3. **Select** → pick your favorites from the 12 recommendations
-4. **Generate itinerary** → Claude assembles a day-by-day plan, streamed via SSE
-
-## Endpoints
-
-### `GET /api/health`
-
-Health check.
+For frontend development with hot reload:
 
 ```bash
-curl http://localhost:8000/api/health
+cd frontend
+npm run dev
 ```
 
-```json
-{"status": "ok"}
-```
+Vite proxies `/api` requests to FastAPI on port 8000.
 
----
+## User flow
 
-### `POST /api/trip/preferences`
+1. Register or sign in.
+2. Complete the six-turn, mascot-led onboarding conversation.
+3. Review the generated persistent character profile.
+4. Enter destination, dates, budget, travelers, and trip interests.
+5. Watch the four research agents finish independently.
+6. Compare the top three profile-ranked choices in each category.
+7. Select preferred options and generate the itinerary.
+8. Edit or retake the character profile at any time.
 
-Submit trip preferences and create a new trip.
+The natural-language profile and structured traits are stored in SQLite. It is generated once, included in research/ranking, learned from after itinerary creation, and is not regenerated on ordinary visits.
+
+## Character profile API
+
+All profile and trip endpoints require the Bearer token returned by the auth endpoints.
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/profile/chat` | Continue the conversational intake |
+| `GET` | `/api/profile/character` | Read the stable character-profile contract |
+| `PUT` | `/api/profile/character` | Edit the summary and structured traits |
+| `POST` | `/api/profile/character/reset` | Delete the profile and retake onboarding |
+
+The legacy `GET /api/profile` contract remains available for compatibility.
+
+## Trip API flow
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/trip/preferences` | Create a trip from validated preferences |
+| `POST` | `/api/trip/{id}/research` | Stream context and agent progress with SSE |
+| `POST` | `/api/trip/{id}/select` | Validate and save recommendation IDs |
+| `POST` | `/api/trip/{id}/itinerary` | Stream itinerary generation with SSE |
+| `GET` | `/api/trip/{id}` | Read current trip state |
+
+## Quality checks
 
 ```bash
-curl -X POST http://localhost:8000/api/trip/preferences \
-  -H "Content-Type: application/json" \
-  -d '{
-    "destination": "Tokyo",
-    "start_date": "2026-05-01",
-    "end_date": "2026-05-06",
-    "budget_tier": "moderate",
-    "vibes": ["culture", "food", "history"],
-    "group_type": "couple",
-    "num_travelers": 2
-  }'
+cd frontend
+npm run lint
+npm run typecheck
+npm test
+npm run build
+npm run test:e2e
+
+cd ..
+.venv/bin/python -m pytest -q
 ```
 
-```json
-{
-  "trip_id": "a1b2c3d4-...",
-  "status": "received",
-  "preferences": { ... }
-}
-```
+The Playwright suite launches FastAPI on port 8010, verifies onboarding, returning-user behavior, profile editing UI, selection, itinerary generation, responsive overflow, and captures the review screenshots in `screenshots/`.
 
----
+## Current backend boundaries
 
-### `POST /api/trip/{trip_id}/research`
+- Trip state remains in memory and expires after 24 hours; profiles and accounts persist in SQLite.
+- “Show alternatives” reruns the existing research pipeline because the backend does not expose pagination.
+- Dislike feedback is reflected in the current UI and post-itinerary learning; there is no standalone feedback endpoint yet.
+- Share copies the current URL and export uses the browser’s print/PDF support; there is no hosted share document or booking provider integration.
+- Destination imagery is intentionally represented with map motifs until a licensed image/search proxy is exposed by the backend.
 
-Run all 4 agents. Results stream via **Server-Sent Events** — each agent's results appear as soon as it finishes.
-
-```bash
-curl -N http://localhost:8000/api/trip/{trip_id}/research -X POST
-```
-
-SSE event stream:
-
-```
-data: {"event": "context_brief_generated", "brief": "A couple on a moderate budget..."}
-
-data: {"event": "agent_started", "agent": "Accommodation Agent"}
-data: {"event": "agent_started", "agent": "Activities Agent"}
-data: {"event": "agent_started", "agent": "Restaurant Agent"}
-data: {"event": "agent_started", "agent": "Transport Agent"}
-
-data: {"event": "agent_completed", "agent": "Restaurant Agent", "results": [...]}
-data: {"event": "agent_completed", "agent": "Activities Agent", "results": [...]}
-data: {"event": "agent_completed", "agent": "Accommodation Agent", "results": [...]}
-data: {"event": "agent_completed", "agent": "Transport Agent", "results": [...]}
-
-data: {"event": "all_complete", "trip_id": "a1b2c3d4-..."}
-```
-
----
-
-### `POST /api/trip/{trip_id}/select`
-
-Save which recommendations the user picked.
-
-```bash
-curl -X POST http://localhost:8000/api/trip/{trip_id}/select \
-  -H "Content-Type: application/json" \
-  -d '{
-    "selections": ["uuid-1", "uuid-2", "uuid-3", "uuid-4"]
-  }'
-```
-
-```json
-{"status": "selections_saved", "count": 4}
-```
-
----
-
-### `POST /api/trip/{trip_id}/itinerary`
-
-Generate the day-by-day itinerary from selections. Streamed via SSE.
-
-```bash
-curl -N http://localhost:8000/api/trip/{trip_id}/itinerary -X POST
-```
-
-SSE event stream:
-
-```
-data: {"event": "itinerary_started", "trip_id": "...", "selection_count": 4}
-
-data: {"event": "itinerary_complete", "itinerary": {"trip_title": "...", "days": [...]}}
-```
-
----
-
-### `GET /api/trip/{trip_id}`
-
-Get the full trip state (preferences, research results, selections, itinerary).
-
-```bash
-curl http://localhost:8000/api/trip/{trip_id}
-```
-
----
-
-## Full Test Flow
-
-```bash
-# 1. Submit preferences
-TRIP=$(curl -s -X POST http://localhost:8000/api/trip/preferences \
-  -H "Content-Type: application/json" \
-  -d '{
-    "destination": "Tokyo",
-    "start_date": "2026-05-01",
-    "end_date": "2026-05-06",
-    "budget_tier": "moderate",
-    "vibes": ["culture", "food"],
-    "group_type": "couple",
-    "num_travelers": 2
-  }')
-TRIP_ID=$(echo $TRIP | python -c "import sys,json; print(json.load(sys.stdin)['trip_id'])")
-echo "Trip ID: $TRIP_ID"
-
-# 2. Research (SSE stream)
-curl -N -X POST http://localhost:8000/api/trip/$TRIP_ID/research
-
-# 3. Get trip state to see recommendation IDs
-curl -s http://localhost:8000/api/trip/$TRIP_ID | python -m json.tool
-
-# 4. Select recommendations (use real IDs from step 3)
-curl -X POST http://localhost:8000/api/trip/$TRIP_ID/select \
-  -H "Content-Type: application/json" \
-  -d '{"selections": ["id-1", "id-2", "id-3"]}'
-
-# 5. Generate itinerary (SSE stream)
-curl -N -X POST http://localhost:8000/api/trip/$TRIP_ID/itinerary
-```
+See [docs/FRONTEND_ARCHITECTURE.md](docs/FRONTEND_ARCHITECTURE.md) for component and integration details.
