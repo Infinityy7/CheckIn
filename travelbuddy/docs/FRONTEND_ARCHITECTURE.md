@@ -24,7 +24,7 @@
 
 ## Profile integration
 
-The database still stores the profile as a `character.md`-style sketch (`sketch_md`) plus `taste_json`. The new adapter returns a stable UI shape with summary, normalized traits, raw answers, version, and timestamps. Existing `likes`, `dislikes`, diet, and pace values remain available to the ranker; UI traits are stored alongside them and therefore do not break the established scoring pipeline.
+The database still stores the profile as a `character.md`-style sketch (`sketch_md`) plus `taste_json`. The new adapter returns a stable UI shape with summary, normalized traits, raw answers, version, and timestamps. Existing `likes`, `dislikes`, diet, and pace values remain available to the ranker; editable adventure, comfort, spontaneity, local-vs-tourist, food, nightlife, nature, social, and budget traits now contribute directly to score fit. Card feedback is persisted as a weighted taste signal before alternatives are refreshed.
 
 ## Design system
 

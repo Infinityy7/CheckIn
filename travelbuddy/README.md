@@ -59,6 +59,7 @@ All profile and trip endpoints require the Bearer token returned by the auth end
 | `POST` | `/api/profile/chat` | Continue the conversational intake |
 | `GET` | `/api/profile/character` | Read the stable character-profile contract |
 | `PUT` | `/api/profile/character` | Edit the summary and structured traits |
+| `POST` | `/api/profile/character/feedback` | Persist a recommendation like/dislike signal |
 | `POST` | `/api/profile/character/reset` | Delete the profile and retake onboarding |
 
 The legacy `GET /api/profile` contract remains available for compatibility.
@@ -93,7 +94,7 @@ The Playwright suite launches FastAPI on port 8010, verifies onboarding, returni
 
 - Trip state remains in memory and expires after 24 hours; profiles and accounts persist in SQLite.
 - “Show alternatives” reruns the existing research pipeline because the backend does not expose pagination.
-- Dislike feedback is reflected in the current UI and post-itinerary learning; there is no standalone feedback endpoint yet.
+- Recommendation feedback is stored in the taste profile and affects the next research/ranking run.
 - Share copies the current URL and export uses the browser’s print/PDF support; there is no hosted share document or booking provider integration.
 - Destination imagery is intentionally represented with map motifs until a licensed image/search proxy is exposed by the backend.
 

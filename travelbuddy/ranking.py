@@ -87,7 +87,11 @@ def category_allowance(category: str, prefs: TripPreferences) -> float | None:
     return pot  # transport
 
 
-def budget_score(rec: Recommendation, prefs: TripPreferences) -> float:
+def budget_score(
+    rec: Recommendation,
+    prefs: TripPreferences,
+    user_taste: dict | None = None,
+) -> float:
     # 1.0 if it fits the allowance, proportional penalty the further
     # over it goes. cheaper than the allowance is just fine.
     # 0.5 = neutral when we have no cost data
@@ -97,6 +101,13 @@ def budget_score(rec: Recommendation, prefs: TripPreferences) -> float:
     allowance = category_allowance(rec.category, prefs)
     if allowance is None or allowance <= 0:
         return 0.5
+
+    traits = (user_taste or {}).get("traits") or {}
+    budget_style = traits.get("budgetStyle")
+    if budget_style == "strict":
+        allowance *= 0.85
+    elif budget_style == "flexible":
+        allowance *= 1.25
 
     midpoint = (rec.cost_min + rec.cost_max) / 2
     if midpoint <= allowance:
@@ -113,7 +124,7 @@ def score_recommendation(
     # combine the four signals into one 0..1 score
     rating = rating_score(rec)
     vibes = vibe_score(rec, prefs)
-    budget = budget_score(rec, prefs)
+    budget = budget_score(rec, prefs, user_taste)
 
     # taste: group least-misery score, weight scaled by how rich
     # the profile actually is. no profile = old three-signal behavior

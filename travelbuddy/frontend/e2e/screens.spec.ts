@@ -38,10 +38,15 @@ const itinerary = {
 
 function json(route: Route, body: unknown, status = 200) { return route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) }) }
 async function session(page: Page, trip = false, final = false) {
+  const calls = { profilePuts: 0, resets: 0, feedback: 0 }
   await page.addInitScript(({ trip }) => { localStorage.setItem('travelbuddy.session', 'e2e-token'); if (trip) localStorage.setItem('travelbuddy.lastTrip', 'trip-e2e') }, { trip })
   await page.route('**/api/auth/me', (route) => json(route, { email: 'vedant@example.com', intake_complete: true, cotravellers: [] }))
-  await page.route('**/api/profile/character', (route) => route.request().method() === 'PUT' ? json(route, profile) : json(route, profile))
+  await page.route('**/api/profile/character/reset', (route) => { calls.resets += 1; return json(route, { status: 'reset', intake_complete: false }) })
+  await page.route('**/api/profile/character/feedback', (route) => { calls.feedback += 1; return json(route, profile) })
+  await page.route('**/api/profile/chat', (route) => json(route, { reply: 'Let’s remap your travel style. What pace feels best?', done: false }))
+  await page.route('**/api/profile/character', (route) => { if (route.request().method() === 'PUT') calls.profilePuts += 1; return json(route, profile) })
   if (trip) await page.route('**/api/trip/trip-e2e', (route) => json(route, { trip_id: 'trip-e2e', preferences, research_results: categories.map((category) => ({ agent_name: `${category} Agent`, recommendations: recommendations.filter((item) => item.category === category) })), selections: [], ...(final ? { itinerary } : {}) }))
+  return calls
 }
 
 test('landing is polished and free of console errors', async ({ page }) => {
@@ -69,19 +74,27 @@ test('first-time onboarding completes and persists the generated reveal', async 
 })
 
 test('trip creation workspace is responsive and profile editing is wired', async ({ page }) => {
-  await session(page)
+  const calls = await session(page)
   await page.goto('/'); await expect(page.getByRole('heading', { name: /point the compass/ })).toBeVisible()
   await page.screenshot({ path: `${shots}/04-trip-creation-desktop.png`, fullPage: true })
   await page.getByRole('button', { name: /Character profile/i }).click(); await expect(page.getByRole('dialog')).toBeVisible()
   await page.screenshot({ path: `${shots}/05-character-profile.png`, fullPage: true })
+  await page.locator('.profile-summary textarea').fill('A revised travel character with more spontaneous local discoveries and slower mornings.')
+  await page.getByRole('button', { name: /Save profile/ }).click(); expect(calls.profilePuts).toBe(1)
+  await page.getByRole('button', { name: /Character profile/i }).click(); await expect(page.getByRole('dialog')).toBeVisible()
+  await page.keyboard.press('Escape'); await expect(page.getByRole('dialog')).not.toBeVisible()
+  await page.getByRole('button', { name: 'Minimize Tavi' }).click(); await expect(page.locator('.app-shell')).toHaveClass(/app-shell--tavi-hidden/)
+  await page.getByRole('button', { name: /Character profile/i }).click(); await page.getByRole('button', { name: /Retake conversation/ }).click()
+  await expect(page.getByRole('heading', { name: /quick chat/ })).toBeVisible(); expect(calls.resets).toBe(1)
 })
 
 test('ranked recommendations select and generate a final itinerary', async ({ page }) => {
-  await session(page, true)
+  const calls = await session(page, true)
   await page.route('**/api/trip/trip-e2e/select', (route) => json(route, { status: 'selections_saved', count: 1 }))
   await page.route('**/api/trip/trip-e2e/itinerary', (route) => route.fulfill({ status: 200, contentType: 'text/event-stream', body: `data: ${JSON.stringify({ event: 'itinerary_complete', itinerary })}\n\n` }))
   await page.goto('/'); await expect(page.getByRole('heading', { name: 'The shortlist' })).toBeVisible()
   await page.screenshot({ path: `${shots}/06-ranked-recommendations.png`, fullPage: true })
+  await page.getByRole('button', { name: /Show fewer places like/ }).first().click(); expect(calls.feedback).toBe(1)
   await page.getByRole('button', { name: /Choose this/ }).first().click(); await expect(page.getByText('1 selected')).toBeVisible()
   await page.getByRole('button', { name: /Build my itinerary/ }).click(); await expect(page.getByRole('heading', { name: itinerary.trip_title })).toBeVisible()
   await page.screenshot({ path: `${shots}/07-final-itinerary.png`, fullPage: true })
