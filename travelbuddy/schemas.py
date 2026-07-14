@@ -180,6 +180,10 @@ class ChatInput(BaseModel):
     )
 
 
+class CharacterProfileUpdate(BaseModel):
+    """Editable, user-facing fields from the persistent character profile."""
+    summary: str = Field(..., min_length=20, max_length=2000)
+    traits: dict[str, str | float] = Field(default_factory=dict)
 class TripState(BaseModel):
     """Full state of a trip, persisted in the in-memory store."""
     trip_id: str

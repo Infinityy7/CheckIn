@@ -22,6 +22,7 @@ from itinerary import generate_itinerary
 from orchestrator import generate_context_brief, run_agents_streaming
 from schemas import (
     AgentResult,
+    CharacterProfileUpdate,
     ChatInput,
     Itinerary,
     LoginInput,
@@ -157,6 +158,33 @@ async def get_profile(user_id: str = Depends(auth.get_current_user)) -> dict:
         "sketch": profiles.load_sketch(user_id),
         "cotravellers": profiles.list_cotravellers(user_id),
     }
+
+
+@app.get("/api/profile/character")
+async def get_character_profile(user_id: str = Depends(auth.get_current_user)) -> dict:
+    """Stable typed contract for the persistent travel personality profile."""
+    profile = profiles.get_character_profile(user_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Character profile not created yet")
+    return profile
+
+
+@app.put("/api/profile/character")
+async def update_character_profile(
+    body: CharacterProfileUpdate,
+    user_id: str = Depends(auth.get_current_user),
+) -> dict:
+    """Edit the profile summary and structured traits."""
+    if profiles.load_sketch(user_id) is None:
+        raise HTTPException(status_code=404, detail="Character profile not created yet")
+    return profiles.update_character_profile(user_id, body.summary, body.traits)
+
+
+@app.post("/api/profile/character/reset")
+async def reset_character_profile(user_id: str = Depends(auth.get_current_user)) -> dict:
+    """Delete the saved profile so onboarding can be retaken."""
+    profiles.reset_character_profile(user_id)
+    return {"status": "reset", "intake_complete": False}
 
 
 # --- Trip endpoints ---

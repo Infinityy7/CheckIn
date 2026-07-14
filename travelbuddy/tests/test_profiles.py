@@ -8,7 +8,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import auth
 import db
-from profiles import _taste_from_keywords, parse_keywords, parse_taste, slugify
+from profiles import (
+    _taste_from_keywords,
+    get_character_profile,
+    parse_keywords,
+    parse_taste,
+    reset_character_profile,
+    save_sketch,
+    slugify,
+    update_character_profile,
+)
 from schemas import GroupType, Recommendation, TripPreferences
 from tastes import taste_score
 
@@ -132,3 +141,39 @@ def test_auth_register_login_roundtrip(tmp_path):
     row = db.get_user_by_email("test@example.com")
     assert row["pw_hash"] != "supersecret1"
     assert "supersecret1" not in str(row)
+
+
+def test_character_profile_contract_and_editing(tmp_path):
+    db.DB_PATH = tmp_path / "profile.db"
+    db._conn = None
+    db.init_db()
+    raw = """# Character Sketch
+keywords: street food, quiet corners
+
+```json
+{"likes":{"street food":3},"dislikes":{"crowds":2},"diet":[],"pace":"slow","traits":{"pace":"slow","adventureLevel":0.8}}
+```
+
+An unhurried traveler who follows food and avoids crowded group experiences.
+"""
+    save_sketch("profile-user", raw, ["Slow mornings", "Street food", "Hidden corners"])
+
+    profile = get_character_profile("profile-user")
+    assert profile is not None
+    assert profile["id"] == "character:profile-user"
+    assert profile["summary"].startswith("An unhurried traveler")
+    assert "keywords:" not in profile["summary"]
+    assert profile["traits"]["pace"] == "slow"
+    assert profile["traits"]["adventureLevel"] == 0.8
+    assert profile["rawAnswers"] == ["Slow mornings", "Street food", "Hidden corners"]
+
+    edited = update_character_profile(
+        "profile-user",
+        "A thoughtful traveler who now wants a little more momentum and local food.",
+        {**profile["traits"], "pace": "fast", "localVsTourist": 0.9},
+    )
+    assert edited["traits"]["pace"] == "fast"
+    assert "more momentum" in edited["summary"]
+
+    assert reset_character_profile("profile-user") is True
+    assert get_character_profile("profile-user") is None

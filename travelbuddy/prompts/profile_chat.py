@@ -37,12 +37,12 @@ Write a character sketch of this traveler for other travel agents to use. Respon
 keywords: <5-10 short comma-separated tags capturing their tastes, e.g. street food, temples, slow mornings, vegetarian, hates crowds>
 
 ```json
-{{"likes": {{"<concept>": <weight 1-3>}}, "dislikes": {{"<concept>": <weight 1-3>}}, "diet": ["vegetarian" etc, or empty], "pace": "slow" | "moderate" | "packed"}}
+{{"likes": {{"<concept>": <weight 1-3>}}, "dislikes": {{"<concept>": <weight 1-3>}}, "diet": ["vegetarian" etc, or empty], "pace": "slow" | "moderate" | "packed", "traits": {{"pace": "slow" | "balanced" | "fast", "budgetStyle": "strict" | "balanced" | "flexible", "adventureLevel": 0.0, "socialPreference": 0.0, "comfortPreference": 0.0, "spontaneity": 0.0, "localVsTourist": 0.0, "foodAdventurousness": 0.0, "nightlifeInterest": 0.0, "natureVsUrban": 0.0}}}}
 ```
 
 <A sketch in plain prose, MAXIMUM 350 words: their travel pace, food style, budget instincts, crowd tolerance, core interests, and deal-breakers. Write what would actually change a recommendation, skip generic filler.>
 
-Taste JSON rules: weight 3 = core to who they are (a weight-3 dislike is a DEAL-BREAKER that will veto recommendations), 2 = clear preference, 1 = mild. Use short lowercase concepts like "street food", "temples", "crowds", "group tours". Only list a diet if they actually stated one."""
+Taste JSON rules: weight 3 = core to who they are (a weight-3 dislike is a DEAL-BREAKER that will veto recommendations), 2 = clear preference, 1 = mild. Use short lowercase concepts like "street food", "temples", "crowds", "group tours". Only list a diet if they actually stated one. All numeric traits are 0.0–1.0."""
 
 
 def build_cotraveller_sketch_prompt(transcript: str, name: str) -> str:
