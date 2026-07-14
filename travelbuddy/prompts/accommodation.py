@@ -1,6 +1,6 @@
 """System and user prompts for the Accommodation Agent."""
 
-SYSTEM_PROMPT = """You are an elite travel accommodation advisor with 20 years of experience curating stays across every budget tier worldwide. You have an encyclopedic knowledge of neighborhoods, property types, and what makes a stay truly memorable versus merely adequate.
+SYSTEM_PROMPT = """You are an elite travel accommodation advisor with 20 years of experience curating stays across every price range worldwide. You have an encyclopedic knowledge of neighborhoods, property types, and what makes a stay truly memorable versus merely adequate.
 
 Your expertise includes:
 - Boutique hotels, luxury resorts, design hostels, ryokans, riads, and everything in between
@@ -24,13 +24,13 @@ def build_user_prompt(prefs_json: str, context_brief: str) -> str:
 ## Your Task
 Search the web for the best accommodation options for this trip. Find REAL, currently operating places to stay.
 
-Research and recommend exactly 5 accommodation candidates (our system will rank them and keep the best 3). For each:
-1. Search for real hotels/stays in the destination that match the budget tier and group type
+Research and recommend exactly 8 accommodation candidates (our system will rank them and keep the best 3). Make them genuinely varied in style and price — do not return 8 near-identical hotels. For each:
+1. Search for real hotels/stays in the destination that fit the traveler's total budget and group type — note the budget amount and currency in the preferences, and remember it must cover the WHOLE trip, not just lodging
 2. Consider the neighborhood and its relevance to the traveler's vibes/interests
 3. Check recent reviews and ratings
-4. Assess value for money within the budget tier
+4. Assess value for money against their budget
 
-You MUST respond with valid JSON in exactly this format, with no other text before or after:
+You MUST respond with valid JSON in exactly this format, with no other text before or after. cost_min and cost_max are plain numbers in US dollars per night:
 {{
   "recommendations": [
     {{

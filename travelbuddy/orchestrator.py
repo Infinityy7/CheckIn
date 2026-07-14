@@ -15,9 +15,25 @@ from schemas import AgentResult, TripPreferences
 logger = logging.getLogger(__name__)
 
 
-async def generate_context_brief(prefs: TripPreferences) -> str:
-    """Produce a shared trip context paragraph for all agents."""
-    prompt = build_context_brief_prompt(prefs.model_dump_json(indent=2))
+async def generate_context_brief(
+    prefs: TripPreferences,
+    profile_sketch: str | None = None,
+    cotraveller_sketches: list[str] | None = None,
+) -> str:
+    """Produce a shared trip context paragraph for all agents.
+
+    Taste sketches (if the user has them) get folded in here so all
+    4 agents inherit the personalization from this one call.
+    """
+    taste_notes = None
+    if profile_sketch:
+        parts = ["## Traveler taste profile\n" + profile_sketch]
+        if cotraveller_sketches:
+            for sketch in cotraveller_sketches:
+                parts.append("## Co-traveller\n" + sketch)
+        taste_notes = "\n\n".join(parts)
+
+    prompt = build_context_brief_prompt(prefs.model_dump_json(indent=2), taste_notes)
 
     logger.info("Generating trip context brief...")
     brief = await generate_text(
@@ -30,10 +46,16 @@ async def generate_context_brief(prefs: TripPreferences) -> str:
     return brief
 
 
-async def _run_agent(agent: BaseAgent, prefs: TripPreferences, context_brief: str) -> AgentResult | str:
+async def _run_agent(
+    agent: BaseAgent,
+    prefs: TripPreferences,
+    context_brief: str,
+    user_taste: dict | None = None,
+    cotraveller_tastes: list[dict] | None = None,
+) -> AgentResult | str:
     """Run a single agent, returning the result or an error string on failure."""
     try:
-        return await agent.run(prefs, context_brief)
+        return await agent.run(prefs, context_brief, user_taste, cotraveller_tastes)
     except Exception as exc:
         logger.error("Agent %s failed: %s", agent.agent_name, exc, exc_info=True)
         return f"{agent.agent_name}: {exc}"
@@ -52,6 +74,8 @@ def _get_agents() -> list[BaseAgent]:
 async def run_agents_streaming(
     prefs: TripPreferences,
     context_brief: str,
+    user_taste: dict | None = None,
+    cotraveller_tastes: list[dict] | None = None,
 ) -> AsyncGenerator[dict, None]:
     """Run all agents in parallel and yield SSE-style event dicts as each finishes.
 
@@ -67,7 +91,7 @@ async def run_agents_streaming(
     agents = _get_agents()
 
     async def _wrapped(agent: BaseAgent) -> tuple[BaseAgent, AgentResult | str]:
-        return agent, await _run_agent(agent, prefs, context_brief)
+        return agent, await _run_agent(agent, prefs, context_brief, user_taste, cotraveller_tastes)
 
     for agent in agents:
         yield {"event": "agent_started", "agent": agent.agent_name}

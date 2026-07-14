@@ -13,8 +13,9 @@ from schemas import AgentResult, Recommendation, TripPreferences
 
 logger = logging.getLogger(__name__)
 
-# ask for 5, rank them ourselves, keep the best 3
-CANDIDATES_REQUESTED = 5
+# ask for 8, rank them ourselves, keep the best 3 — the bigger pool
+# gives the taste ranker real choices to sort
+CANDIDATES_REQUESTED = 8
 RESULTS_RETURNED = 3
 MIN_VALID_CANDIDATES = 3
 
@@ -44,7 +45,13 @@ class BaseAgent(ABC):
     def build_user_prompt(self, prefs: TripPreferences, context_brief: str) -> str:
         """Build the user message for this agent."""
 
-    async def run(self, prefs: TripPreferences, context_brief: str) -> AgentResult:
+    async def run(
+        self,
+        prefs: TripPreferences,
+        context_brief: str,
+        user_taste: dict | None = None,
+        cotraveller_tastes: list[dict] | None = None,
+    ) -> AgentResult:
         """Call the LLM, validate the output, rank it, return the top 3."""
         user_prompt = self.build_user_prompt(prefs, context_brief)
         last_error: Exception | None = None
@@ -75,7 +82,7 @@ class BaseAgent(ABC):
                 await asyncio.sleep(1)
                 continue
 
-            ranked = rank_recommendations(candidates, prefs)
+            ranked = rank_recommendations(candidates, prefs, user_taste, cotraveller_tastes)
             top = ranked[:RESULTS_RETURNED]
             logger.info(
                 "[%s] %d valid candidates, kept top %d (best: '%s', score %.3f)",

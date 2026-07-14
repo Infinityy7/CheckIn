@@ -121,6 +121,13 @@
   .card .desc { font-size: 14px; margin-bottom: 4px; }
   .card .why { font-size: 13px; color: #555; }
   .card .pick { font-size: 13px; font-weight: bold; color: #16a34a; margin-top: 6px; }
+  .card .match { font-size: 13px; color: #16a34a; margin-top: 4px; }
+  .card .conflict {
+    display: inline-block;
+    background: #dc2626; color: #fff;
+    font-size: 12px; padding: 2px 8px;
+    margin-top: 6px;
+  }
 
   .day {
     border: 1px solid #ccc;
@@ -140,12 +147,48 @@
 
   .hidden { display: none; }
   .muted { color: #555; font-size: 14px; }
+
+  button.secondary {
+    background: #fff;
+    color: #1d4ed8;
+    border: 1px solid #1d4ed8;
+  }
+  button.secondary:hover { background: #eff6ff; }
+
+  #logoutBtn {
+    float: right;
+    background: #1d4ed8;
+    border: 1px solid #fff;
+    padding: 6px 14px;
+    font-size: 13px;
+  }
+
+  .chat {
+    border: 1px solid #ccc;
+    background: #fafafa;
+    height: 320px;
+    overflow-y: auto;
+    padding: 12px;
+    margin-bottom: 10px;
+  }
+  .bubble {
+    max-width: 75%;
+    padding: 8px 12px;
+    margin-bottom: 8px;
+    font-size: 14px;
+    clear: both;
+  }
+  .bubble.buddy { background: #e5e7eb; float: left; }
+  .bubble.me { background: #1d4ed8; color: #fff; float: right; }
+  .chatrow { display: flex; gap: 8px; }
+  .chatrow input { flex: 1; }
 </style>
 </head>
 <body>
 
 <header>
   <div class="wrap">
+    <button id="logoutBtn" class="hidden">Log out</button>
     <h1>TravelBuddy</h1>
     <p>plan a trip with four research agents</p>
   </div>
@@ -154,14 +197,47 @@
 <div class="wrap">
   <div id="errorBox" class="error"></div>
 
+  <!-- login / register -->
+  <section id="authSection" class="hidden">
+    <h2>Log in or register</h2>
+    <div class="row">
+      <div>
+        <label for="email">Email</label>
+        <input id="email" type="email" placeholder="you@example.com">
+      </div>
+      <div>
+        <label for="password">Password</label>
+        <input id="password" type="password" placeholder="min 8 characters">
+      </div>
+    </div>
+    <button id="loginBtn">Log in</button>
+    <button id="registerBtn" class="secondary">Register</button>
+  </section>
+
+  <!-- intake chat with Buddy -->
+  <section id="chatSection" class="hidden">
+    <h2 id="chatTitle">Quick chat so Buddy gets to know you</h2>
+    <div id="chatMessages" class="chat"></div>
+    <div class="chatrow">
+      <input id="chatInput" type="text" placeholder="Type your answer...">
+      <button id="chatSendBtn">Send</button>
+    </div>
+  </section>
+
   <!-- step 1: preferences -->
-  <section id="prefsSection">
+  <section id="prefsSection" class="hidden">
     <h2>1. Trip details</h2>
     <div class="row">
+      <div>
+        <label for="origin">Traveling from</label>
+        <input id="origin" type="text" placeholder="e.g. Mumbai">
+      </div>
       <div>
         <label for="destination">Destination</label>
         <input id="destination" type="text" placeholder="e.g. Tokyo">
       </div>
+    </div>
+    <div class="row">
       <div>
         <label for="startDate">Start date</label>
         <input id="startDate" type="date">
@@ -173,12 +249,19 @@
     </div>
     <div class="row">
       <div>
-        <label for="budget">Budget</label>
-        <select id="budget">
-          <option value="budget">Budget</option>
-          <option value="moderate" selected>Moderate</option>
-          <option value="premium">Premium</option>
-          <option value="luxury">Luxury</option>
+        <label for="budget">Total budget (whole trip)</label>
+        <input id="budget" type="number" min="1" step="any" placeholder="e.g. 2000">
+      </div>
+      <div style="flex: 0 0 110px; min-width: 110px;">
+        <label for="currency">Currency</label>
+        <select id="currency">
+          <option value="USD" selected>USD $</option>
+          <option value="EUR">EUR €</option>
+          <option value="GBP">GBP £</option>
+          <option value="INR">INR ₹</option>
+          <option value="JPY">JPY ¥</option>
+          <option value="AUD">AUD $</option>
+          <option value="CAD">CAD $</option>
         </select>
       </div>
       <div>
@@ -197,6 +280,16 @@
     </div>
     <label>Vibes (pick at least one)</label>
     <div class="vibes" id="vibes"></div>
+    <label>Traveling with (optional, from your saved co-travellers)</label>
+    <div class="vibes" id="cotravellers"><span class="muted">none saved yet</span></div>
+    <div class="row">
+      <div>
+        <input id="newCotName" type="text" placeholder="Name, e.g. Mom">
+      </div>
+      <div style="flex: 0 0 auto;">
+        <button id="addCotBtn" class="secondary" type="button">Add co-traveller</button>
+      </div>
+    </div>
     <button id="startBtn">Start research</button>
   </section>
 
@@ -224,9 +317,26 @@ var API = "";  // same origin
 var VIBES = ["adventure", "culture", "food", "nightlife", "relaxation",
              "nature", "shopping", "history", "romance", "family-friendly"];
 
+var token = localStorage.getItem("tb_token");
+var chatMode = null;   // null = intake chat about the user, or a co-traveller name
 var tripId = null;
 var allRecs = {};      // id -> recommendation
 var selectedIds = {};  // id -> true
+
+// fetch wrapper that adds the session token
+function api(path, opts) {
+  opts = opts || {};
+  opts.headers = opts.headers || {};
+  opts.headers["Content-Type"] = "application/json";
+  if (token) {
+    opts.headers["Authorization"] = "Bearer " + token;
+  }
+  return fetch(API + path, opts);
+}
+
+function show(id, on) {
+  document.getElementById(id).classList.toggle("hidden", !on);
+}
 
 // build the vibe buttons
 var vibesBox = document.getElementById("vibes");
@@ -257,7 +367,7 @@ function clearError() {
 
 // read a POST SSE stream and call onEvent for each data line
 async function readSSE(url, onEvent) {
-  var resp = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" } });
+  var resp = await api(url, { method: "POST" });
   if (!resp.ok) {
     var body = await resp.text();
     throw new Error("HTTP " + resp.status + ": " + body);
@@ -289,16 +399,22 @@ document.getElementById("startBtn").addEventListener("click", async function () 
 
   var prefs = {
     destination: document.getElementById("destination").value.trim(),
+    origin: document.getElementById("origin").value.trim(),
     start_date: document.getElementById("startDate").value,
     end_date: document.getElementById("endDate").value,
-    budget_tier: document.getElementById("budget").value,
+    budget_amount: parseFloat(document.getElementById("budget").value),
+    currency: document.getElementById("currency").value,
     vibes: vibes,
     group_type: document.getElementById("group").value,
     num_travelers: parseInt(document.getElementById("travelers").value, 10)
   };
 
-  if (!prefs.destination || !prefs.start_date || !prefs.end_date) {
-    showError("Please fill in destination and both dates.");
+  if (!prefs.origin || !prefs.destination || !prefs.start_date || !prefs.end_date) {
+    showError("Please fill in where you're traveling from, the destination, and both dates.");
+    return;
+  }
+  if (!prefs.budget_amount || prefs.budget_amount <= 0) {
+    showError("Enter your total trip budget.");
     return;
   }
   if (vibes.length === 0) {
@@ -310,10 +426,16 @@ document.getElementById("startBtn").addEventListener("click", async function () 
   btn.disabled = true;
   btn.textContent = "Creating trip...";
 
+  // saved co-travellers they ticked
+  var cots = [];
+  document.getElementById("cotravellers").querySelectorAll("input:checked").forEach(function (cb) {
+    cots.push(cb.value);
+  });
+  prefs.cotravellers = cots;
+
   try {
-    var resp = await fetch(API + "/api/trip/preferences", {
+    var resp = await api("/api/trip/preferences", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(prefs)
     });
     var data = await resp.json();
@@ -346,7 +468,7 @@ async function runResearch() {
   });
 
   try {
-    await readSSE(API + "/api/trip/" + tripId + "/research", function (ev) {
+    await readSSE("/api/trip/" + tripId + "/research", function (ev) {
       if (ev.event === "context_brief_generated") {
         var brief = document.getElementById("brief");
         brief.textContent = ev.brief;
@@ -388,6 +510,17 @@ function renderAgentResults(agentName, results) {
     card.dataset.id = rec.id;
 
     var reviews = rec.review_count ? " (" + rec.review_count + " reviews)" : "";
+
+    // taste explainability: what matched, what clashed
+    var breakdown = rec.score_breakdown || {};
+    var tasteBits = "";
+    if (breakdown.matched && breakdown.matched.length > 0) {
+      tasteBits += '<div class="match">Matches your taste: ' + esc(breakdown.matched.join(", ")) + '</div>';
+    }
+    if (breakdown.conflicts && breakdown.conflicts.length > 0) {
+      tasteBits += '<div class="conflict">⚠ Conflicts: ' + esc(breakdown.conflicts.join(" · ")) + '</div>';
+    }
+
     card.innerHTML =
       '<div class="top">' +
         '<span class="name">' + esc(rec.name) + '</span>' +
@@ -397,6 +530,7 @@ function renderAgentResults(agentName, results) {
         ' · ' + rec.rating + '/5' + reviews + '</div>' +
       '<div class="desc">' + esc(rec.description) + '</div>' +
       '<div class="why">Why: ' + esc(rec.reasoning) + '</div>' +
+      tasteBits +
       '<div class="pick hidden">SELECTED</div>';
 
     card.addEventListener("click", function () {
@@ -432,9 +566,8 @@ document.getElementById("itineraryBtn").addEventListener("click", async function
   btn.textContent = "Saving selections...";
 
   try {
-    var resp = await fetch(API + "/api/trip/" + tripId + "/select", {
+    var resp = await api("/api/trip/" + tripId + "/select", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ selections: Object.keys(selectedIds) })
     });
     var data = await resp.json();
@@ -443,7 +576,7 @@ document.getElementById("itineraryBtn").addEventListener("click", async function
     btn.textContent = "Building itinerary (takes a minute)...";
     document.getElementById("itinerarySection").classList.remove("hidden");
 
-    await readSSE(API + "/api/trip/" + tripId + "/itinerary", function (ev) {
+    await readSSE("/api/trip/" + tripId + "/itinerary", function (ev) {
       if (ev.event === "itinerary_complete") {
         renderItinerary(ev.itinerary);
         btn.textContent = "Itinerary ready below";
@@ -499,6 +632,159 @@ function esc(s) {
   d.textContent = s == null ? "" : String(s);
   return d.innerHTML;
 }
+
+// ---- auth ----
+
+async function doAuth(path) {
+  clearError();
+  var body = {
+    email: document.getElementById("email").value.trim(),
+    password: document.getElementById("password").value
+  };
+  try {
+    var resp = await api(path, { method: "POST", body: JSON.stringify(body) });
+    var data = await resp.json();
+    if (!resp.ok) throw new Error(JSON.stringify(data.detail || data));
+    token = data.token;
+    localStorage.setItem("tb_token", token);
+    await init();
+  } catch (err) {
+    showError(err.message);
+  }
+}
+
+document.getElementById("loginBtn").addEventListener("click", function () {
+  doAuth("/api/auth/login");
+});
+document.getElementById("registerBtn").addEventListener("click", function () {
+  doAuth("/api/auth/register");
+});
+document.getElementById("logoutBtn").addEventListener("click", async function () {
+  try { await api("/api/auth/logout", { method: "POST" }); } catch (err) { /* whatever, logging out anyway */ }
+  localStorage.removeItem("tb_token");
+  location.reload();
+});
+
+// ---- intake chat with Buddy ----
+
+function addBubble(who, text) {
+  var box = document.getElementById("chatMessages");
+  var div = document.createElement("div");
+  div.className = "bubble " + who;
+  div.textContent = text;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+}
+
+async function startChat(cotName) {
+  chatMode = cotName;
+  document.getElementById("chatMessages").innerHTML = "";
+  document.getElementById("chatTitle").textContent =
+    cotName ? "Tell Buddy about " + cotName : "Quick chat so Buddy gets to know you";
+  show("chatSection", true);
+  show("prefsSection", false);
+  await sendChat("");  // empty message kicks off the conversation
+}
+
+async function sendChat(message) {
+  if (message) addBubble("me", message);
+  var btn = document.getElementById("chatSendBtn");
+  btn.disabled = true;
+  try {
+    var resp = await api("/api/profile/chat", {
+      method: "POST",
+      body: JSON.stringify({ message: message, cotraveller_name: chatMode })
+    });
+    var data = await resp.json();
+    if (!resp.ok) throw new Error(JSON.stringify(data.detail || data));
+    addBubble("buddy", data.reply);
+    if (data.done) {
+      // sketch saved — back to the app after a beat
+      setTimeout(async function () {
+        show("chatSection", false);
+        await init();
+      }, 1500);
+    }
+  } catch (err) {
+    showError(err.message);
+  }
+  btn.disabled = false;
+}
+
+document.getElementById("chatSendBtn").addEventListener("click", function () {
+  var input = document.getElementById("chatInput");
+  var text = input.value.trim();
+  if (!text) return;
+  input.value = "";
+  sendChat(text);
+});
+document.getElementById("chatInput").addEventListener("keydown", function (e) {
+  if (e.key === "Enter") document.getElementById("chatSendBtn").click();
+});
+
+// ---- co-travellers ----
+
+function renderCotravellers(names) {
+  var box = document.getElementById("cotravellers");
+  box.innerHTML = "";
+  if (!names || names.length === 0) {
+    box.innerHTML = '<span class="muted">none saved yet</span>';
+    return;
+  }
+  names.forEach(function (name) {
+    var label = document.createElement("label");
+    label.textContent = name;
+    var cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.value = name;
+    label.appendChild(cb);
+    label.addEventListener("click", function (e) {
+      e.preventDefault();
+      cb.checked = !cb.checked;
+      label.classList.toggle("on", cb.checked);
+    });
+    box.appendChild(label);
+  });
+}
+
+document.getElementById("addCotBtn").addEventListener("click", function () {
+  var name = document.getElementById("newCotName").value.trim();
+  if (!name) {
+    showError("Give your co-traveller a name first.");
+    return;
+  }
+  document.getElementById("newCotName").value = "";
+  startChat(name);
+});
+
+// ---- startup ----
+
+async function init() {
+  if (!token) {
+    show("authSection", true);
+    return;
+  }
+  var resp = await api("/api/auth/me");
+  if (!resp.ok) {
+    // stale token, back to login
+    token = null;
+    localStorage.removeItem("tb_token");
+    show("authSection", true);
+    return;
+  }
+  var me = await resp.json();
+  show("authSection", false);
+  show("logoutBtn", true);
+  if (!me.intake_complete) {
+    startChat(null);  // required once before planning
+  } else {
+    show("chatSection", false);
+    show("prefsSection", true);
+    renderCotravellers(me.cotravellers);
+  }
+}
+
+init();
 </script>
 </body>
 </html>

@@ -6,21 +6,29 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from ranking import budget_score, rank_recommendations, rating_score, vibe_score
-from schemas import BudgetTier, GroupType, Recommendation, TripPreferences
+from ranking import (
+    budget_score,
+    category_allowance,
+    rank_recommendations,
+    rating_score,
+    vibe_score,
+)
+from schemas import GroupType, Recommendation, TripPreferences
 
 
-def make_prefs(budget_tier=BudgetTier.MODERATE, vibes=None):
+def make_prefs(budget_amount=2000, currency="USD", vibes=None, num_travelers=2):
     if vibes is None:
         vibes = ["food", "culture"]
     return TripPreferences(
         destination="Tokyo",
+        origin="Mumbai",
         start_date=date(2026, 9, 1),
-        end_date=date(2026, 9, 7),
-        budget_tier=budget_tier,
+        end_date=date(2026, 9, 5),  # 5 days, 4 nights
+        budget_amount=budget_amount,
+        currency=currency,
         vibes=vibes,
         group_type=GroupType.COUPLE,
-        num_travelers=2,
+        num_travelers=num_travelers,
     )
 
 
@@ -59,18 +67,41 @@ def test_vibe_score_counts_matched_vibes():
     assert vibe_score(neither, prefs) == 0.0
 
 
-def test_budget_score_penalizes_over_budget():
-    prefs = make_prefs(budget_tier=BudgetTier.BUDGET)
-    in_band = make_rec(cost_min=10, cost_max=20)       # midpoint 15, band 0-25
-    over = make_rec(cost_min=100, cost_max=200)        # midpoint 150, way over
-    assert budget_score(in_band, prefs) == 1.0
-    assert budget_score(over, prefs) < 0.2
+def test_category_allowance_uses_real_budget():
+    # $2000 trip, 5 days, 4 nights, 2 people
+    prefs = make_prefs(budget_amount=2000)
+    # hotel: 35% of 2000 = 700 over 4 nights = 175/night
+    assert category_allowance("hotel", prefs) == 175
+    # restaurant: 20% of 2000 = 400 over 5 days * 3 meals * 2 people = ~13.33/meal
+    assert round(category_allowance("restaurant", prefs), 2) == 13.33
+    # transport: 30% of 2000 = 600 for the whole trip incl. getting there
+    assert category_allowance("transport", prefs) == 600
 
 
-def test_budget_score_penalizes_too_cheap_for_luxury():
-    prefs = make_prefs(budget_tier=BudgetTier.LUXURY)
-    cheap = make_rec(category="hotel", cost_min=30, cost_max=50)  # below 350 floor
-    assert budget_score(cheap, prefs) < 0.5
+def test_budget_score_penalizes_over_allowance():
+    prefs = make_prefs(budget_amount=500)  # tight budget
+    # hotel allowance: 35% of 500 / 4 nights = 43.75/night
+    cheap = make_rec(category="hotel", cost_min=30, cost_max=50)   # midpoint 40, fits
+    pricey = make_rec(category="hotel", cost_min=155, cost_max=195)  # midpoint 175, 4x over
+    assert budget_score(cheap, prefs) == 1.0
+    assert budget_score(pricey, prefs) == 0.25
+
+
+def test_budget_score_cheap_is_fine():
+    # under the allowance is never penalized
+    prefs = make_prefs(budget_amount=10000)
+    very_cheap = make_rec(category="hotel", cost_min=20, cost_max=40)
+    assert budget_score(very_cheap, prefs) == 1.0
+
+
+def test_budget_score_converts_currency():
+    # same hotel, budget stated in INR: 100000 INR ~= 1200 USD
+    prefs_inr = make_prefs(budget_amount=100000, currency="INR")
+    # hotel allowance: 35% of 1200 / 4 nights = 105/night
+    fits = make_rec(category="hotel", cost_min=90, cost_max=110)    # midpoint 100
+    over = make_rec(category="hotel", cost_min=300, cost_max=340)   # midpoint 320
+    assert budget_score(fits, prefs_inr) == 1.0
+    assert budget_score(over, prefs_inr) < 0.5
 
 
 def test_budget_score_neutral_without_cost_data():
@@ -91,7 +122,9 @@ def test_rank_orders_best_first_and_assigns_ranks():
     assert ranked[0].rank == 1
     assert ranked[1].rank == 2
     assert ranked[0].score > ranked[1].score
-    assert set(ranked[0].score_breakdown.keys()) == {"rating", "vibes", "budget", "total"}
+    assert set(ranked[0].score_breakdown.keys()) == {
+        "rating", "vibes", "budget", "taste", "matched", "conflicts", "total",
+    }
 
 
 def test_scores_stay_in_unit_range():

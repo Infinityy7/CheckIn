@@ -24,12 +24,13 @@ def _purge_old_trips() -> None:
         del _trips[trip_id]
 
 
-def create_trip(prefs: TripPreferences) -> TripState:
+def create_trip(prefs: TripPreferences, user_id: str = "") -> TripState:
     """Create a new trip and return its state."""
     _purge_old_trips()
     trip_id = str(uuid.uuid4())
     state = TripState(
         trip_id=trip_id,
+        user_id=user_id,
         preferences=prefs,
         created_at=datetime.now(timezone.utc).isoformat(),
     )

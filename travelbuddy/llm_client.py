@@ -58,18 +58,25 @@ async def generate_text(
     use_search: bool = False,
     max_output_tokens: int = 4096,
     temperature: float = 0.3,
+    cheap: bool = False,
 ) -> str:
     """Ask OpenAI for text. Tries the main model, falls back to the cheaper one.
 
     use_search=True turns on the built-in web_search tool (Responses API).
+    cheap=True skips straight to the cheap model (profile chat, sketch updates).
     """
     tools = None
     if use_search:
         tools = [{"type": "web_search"}]
 
+    if cheap:
+        models = [OPENAI_FALLBACK_MODEL]
+    else:
+        models = [OPENAI_MODEL, OPENAI_FALLBACK_MODEL]
+
     last_error: Exception | None = None
 
-    for model in [OPENAI_MODEL, OPENAI_FALLBACK_MODEL]:
+    for model in models:
         try:
             async with _call_limiter:
                 kwargs = {
