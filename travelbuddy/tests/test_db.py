@@ -88,6 +88,16 @@ def test_list_cotraveller_profiles_ordering(tmp_path):
     assert slugs == ["adam", "mom", "zoe"]
 
 
+def test_delete_profile_is_scoped(tmp_path):
+    fresh_db(tmp_path)
+    db.save_profile("u1", "self", "self", "self", "one", None)
+    db.save_profile("u2", "self", "self", "self", "two", None)
+    assert db.delete_profile("u1", "self") is True
+    assert db.get_profile("u1", "self") is None
+    assert db.get_profile("u2", "self")["sketch_md"] == "two"
+    assert db.delete_profile("u1", "self") is False
+
+
 def test_legacy_migration(tmp_path):
     # build a fake pre-db data dir
     data_dir = tmp_path / "data"

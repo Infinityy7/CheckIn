@@ -46,12 +46,93 @@ def load_sketch(user_id: str) -> str | None:
     return row["sketch_md"]
 
 
-def save_sketch(user_id: str, raw_text: str) -> None:
+def save_sketch(user_id: str, raw_text: str, raw_answers: list[str] | None = None) -> None:
     # store the raw sketch (with its taste json block) plus the
     # extracted taste separately so the ranker never has to parse md
     _clean, taste = parse_taste(raw_text)
+    if taste is not None and raw_answers:
+        taste["rawAnswers"] = raw_answers
     taste_json = json.dumps(taste) if taste else None
     db.save_profile(user_id, "self", "self", "self", raw_text.strip(), taste_json)
+
+
+def _profile_traits(taste: dict | None) -> dict:
+    """Return the normalized UI trait model while preserving ranker-friendly taste fields."""
+    taste = taste or {}
+    supplied = taste.get("traits") if isinstance(taste.get("traits"), dict) else {}
+    pace = supplied.get("pace") or taste.get("pace") or "balanced"
+    if pace == "moderate":
+        pace = "balanced"
+    elif pace == "packed":
+        pace = "fast"
+    defaults = {
+        "pace": pace,
+        "budgetStyle": "balanced",
+        "adventureLevel": 0.55,
+        "socialPreference": 0.5,
+        "comfortPreference": 0.55,
+        "spontaneity": 0.5,
+        "localVsTourist": 0.65,
+        "foodAdventurousness": 0.6,
+        "nightlifeInterest": 0.35,
+        "natureVsUrban": 0.5,
+    }
+    defaults.update(supplied)
+    return defaults
+
+
+def _clean_profile_summary(sketch: str) -> str:
+    """Remove markdown storage metadata from the user-facing prose summary."""
+    prose, _taste = parse_taste(sketch)
+    lines = [
+        line for line in prose.splitlines()
+        if line.strip().lower() not in {"# character sketch", "character sketch"}
+        and not line.strip().lower().startswith("keywords:")
+    ]
+    return "\n".join(lines).strip()
+
+
+def get_character_profile(user_id: str) -> dict | None:
+    """Return the stable frontend contract for the user's character.md profile."""
+    row = db.get_profile(user_id, "self")
+    if row is None:
+        return None
+    _, parsed = parse_taste(row["sketch_md"])
+    taste = get_taste(user_id) or parsed or {}
+    return {
+        "id": f"character:{user_id}",
+        "version": 1,
+        "summary": _clean_profile_summary(row["sketch_md"]),
+        "traits": _profile_traits(taste),
+        "rawAnswers": taste.get("rawAnswers", []),
+        "createdAt": row["updated_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def update_character_profile(user_id: str, summary: str, traits: dict) -> dict:
+    """Persist an edited summary and traits without discarding ranking taste signals."""
+    current = get_taste(user_id) or {"likes": {}, "dislikes": {}, "diet": [], "pace": "moderate"}
+    current["traits"] = traits
+    ui_pace = traits.get("pace")
+    current["pace"] = {"slow": "slow", "balanced": "moderate", "fast": "packed"}.get(
+        str(ui_pace), current.get("pace", "moderate")
+    )
+    keywords = list(current.get("likes", {}).keys())[:10]
+    raw = (
+        "# Character Sketch\n"
+        + "keywords: " + ", ".join(keywords) + "\n\n"
+        + "```json\n" + json.dumps(current, ensure_ascii=False) + "\n```\n\n"
+        + summary.strip()
+    )
+    db.save_profile(user_id, "self", "self", "self", raw, json.dumps(current))
+    return get_character_profile(user_id) or {}
+
+
+def reset_character_profile(user_id: str) -> bool:
+    """Clear a saved profile and any in-flight onboarding conversation."""
+    _chats.pop(user_id, None)
+    return db.delete_profile(user_id, "self", "self")
 
 
 def load_cotraveller(user_id: str, name: str) -> str | None:
@@ -227,7 +308,8 @@ async def chat_turn(user_id: str, message: str, cotraveller_name: str | None = N
         if cotraveller_name:
             save_cotraveller(user_id, cotraveller_name, sketch)
         else:
-            save_sketch(user_id, sketch)
+            answers = [msg["content"] for msg in history if msg["role"] == "user"]
+            save_sketch(user_id, sketch, answers)
         _chats.pop(key, None)
         return INTAKE_DONE_MESSAGE, True
 

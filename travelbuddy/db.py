@@ -126,6 +126,18 @@ def get_profile(user_id: str, kind: str, slug: str = "self") -> dict | None:
     return dict(row)
 
 
+def delete_profile(user_id: str, kind: str, slug: str = "self") -> bool:
+    """Delete one profile and report whether a row was removed."""
+    conn = _connect()
+    with _lock:
+        cursor = conn.execute(
+            "DELETE FROM profiles WHERE user_id = ? AND kind = ? AND slug = ?",
+            (user_id, kind, slug),
+        )
+        conn.commit()
+    return cursor.rowcount > 0
+
+
 def list_cotraveller_profiles(user_id: str) -> list[dict]:
     conn = _connect()
     rows = conn.execute(
