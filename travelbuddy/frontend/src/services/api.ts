@@ -1,4 +1,4 @@
-import type { CharacterProfile, StreamEvent, TripPreferences, TripState, User } from '../types'
+import type { CharacterProfile, Recommendation, StreamEvent, TripPreferences, TripState, User } from '../types'
 
 const TOKEN_KEY = 'travelbuddy.session'
 
@@ -69,6 +69,10 @@ export const api = {
     method: 'PUT', body: JSON.stringify(profile),
   }),
   resetProfile: () => request('/api/profile/character/reset', { method: 'POST' }),
+  feedback: (recommendation: Recommendation, sentiment: 'like' | 'dislike') => request<CharacterProfile>('/api/profile/character/feedback', {
+    method: 'POST',
+    body: JSON.stringify({ recommendation_name: recommendation.name, category: recommendation.category, sentiment }),
+  }),
   createTrip: (preferences: TripPreferences) => request<{ trip_id: string }>('/api/trip/preferences', {
     method: 'POST', body: JSON.stringify(preferences),
   }),

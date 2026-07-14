@@ -11,6 +11,7 @@ from tastes import (
     group_score,
     profile_confidence,
     taste_score,
+    trait_score,
 )
 
 
@@ -132,3 +133,22 @@ def test_empty_taste_is_neutral():
     assert taste_score(rec, {}) == (0.5, [], [])
     assert taste_score(rec, None) == (0.5, [], [])
     assert find_dealbreakers(rec, {}) == []
+
+
+def test_editable_traits_change_recommendation_fit():
+    local_walk = make_rec(
+        category="activity",
+        name="Quiet Neighborhood Backroads",
+        description="A local, authentic garden walk through a residential neighborhood.",
+        metadata={"physical_intensity": "moderate", "booking_required": False},
+    )
+    local_taste = {"traits": {"localVsTourist": 0.95, "spontaneity": 0.9}}
+    iconic_taste = {"traits": {"localVsTourist": 0.05, "spontaneity": 0.1}}
+    local_score, matched = trait_score(local_walk, local_taste)
+    iconic_score, _ = trait_score(local_walk, iconic_taste)
+    assert local_score > iconic_score
+    assert "trait: localVsTourist" in matched
+
+
+def test_traits_contribute_to_profile_confidence():
+    assert profile_confidence({"traits": {"adventureLevel": 0.8, "localVsTourist": 0.9}}) == 0.1

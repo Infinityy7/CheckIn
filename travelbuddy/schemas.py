@@ -184,6 +184,13 @@ class CharacterProfileUpdate(BaseModel):
     """Editable, user-facing fields from the persistent character profile."""
     summary: str = Field(..., min_length=20, max_length=2000)
     traits: dict[str, str | float] = Field(default_factory=dict)
+
+
+class RecommendationFeedbackInput(BaseModel):
+    """A lightweight preference signal captured from a recommendation card."""
+    recommendation_name: str = Field(..., min_length=1, max_length=160)
+    category: str = Field(..., min_length=1, max_length=40)
+    sentiment: str = Field(..., pattern="^(like|dislike)$")
 class TripState(BaseModel):
     """Full state of a trip, persisted in the in-memory store."""
     trip_id: str

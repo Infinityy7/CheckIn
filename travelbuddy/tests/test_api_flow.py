@@ -124,6 +124,14 @@ A balanced traveler who values local food and quieter cultural experiences.
     assert edited.status_code == 200
     assert edited.json()["traits"]["spontaneity"] == 0.9
 
+    feedback = client.post(
+        "/api/profile/character/feedback",
+        headers=headers,
+        json={"recommendation_name": "Crowded Bus Tour", "category": "activity", "sentiment": "dislike"},
+    )
+    assert feedback.status_code == 200
+    assert profiles.get_taste(user_id)["dislikes"]["crowded bus tour"] == 2
+
     trip = client.post("/api/trip/preferences", headers=headers, json={
         "destination": "Kyoto", "origin": "Mumbai", "start_date": "2026-10-12", "end_date": "2026-10-18",
         "budget_amount": 3200, "currency": "USD", "vibes": ["culture", "food", "nature"],
@@ -139,6 +147,12 @@ A balanced traveler who values local food and quieter cultural experiences.
     selected_ids = [result["recommendations"][0]["id"] for result in state["research_results"]]
     selected = client.post(f"/api/trip/{trip_id}/select", headers=headers, json={"selections": selected_ids})
     assert selected.json()["count"] == 4
+
+    # A refreshed shortlist replaces IDs and must invalidate old selections.
+    refreshed = client.post(f"/api/trip/{trip_id}/research", headers=headers)
+    assert refreshed.status_code == 200
+    assert client.get(f"/api/trip/{trip_id}", headers=headers).json()["selections"] is None
+    client.post(f"/api/trip/{trip_id}/select", headers=headers, json={"selections": selected_ids})
 
     generated = client.post(f"/api/trip/{trip_id}/itinerary", headers=headers)
     assert generated.status_code == 200

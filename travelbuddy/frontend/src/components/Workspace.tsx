@@ -30,7 +30,7 @@ function RecommendationCard({ item, selected, onSelect, onDislike }: { item: Rec
   </article>
 }
 
-export function Workspace({ destination, preferences, profile, recommendations, agents, researching, selections, onToggle, onAlternatives, onBuild }: {
+export function Workspace({ destination, preferences, profile, recommendations, agents, researching, selections, onToggle, onAlternatives, onFeedback, onBuild }: {
   destination: string
   preferences: TripPreferences
   profile: CharacterProfile | null
@@ -40,6 +40,7 @@ export function Workspace({ destination, preferences, profile, recommendations, 
   selections: string[]
   onToggle: (id: string) => void
   onAlternatives: () => void
+  onFeedback: (item: Recommendation) => Promise<void>
   onBuild: () => void
 }) {
   const available = categories.filter((category) => recommendations.some((item) => item.category === category.id))
@@ -67,7 +68,7 @@ export function Workspace({ destination, preferences, profile, recommendations, 
       <section className="recommendations-panel">
         <div className="section-heading"><div><span className="eyebrow">Ranked for your character</span><h2>The shortlist</h2></div><button className="alternative-button" onClick={onAlternatives} disabled={researching}><RefreshCw /> Show alternatives</button></div>
         <div className="category-tabs" role="tablist">{categories.map(({ id, label, icon: Icon }) => <button role="tab" aria-selected={category === id} className={category === id ? 'is-active' : ''} key={id} onClick={() => setCategory(id)}><Icon />{label}<span>{recommendations.filter((item) => item.category === id).length}</span></button>)}</div>
-        {active.length ? <div className="recommendation-list">{active.map((item) => <RecommendationCard key={item.id} item={item} selected={selections.includes(item.id)} onSelect={() => onToggle(item.id)} onDislike={() => setFeedback((items) => [...items, item.id])} />)}</div> : <EmptyState title={researching ? 'This agent is still out exploring' : 'Nothing landed in this category'} detail={researching ? 'Results arrive independently, so you can browse while the others work.' : 'Run the research again to search a wider route.'} />}
+        {active.length ? <div className="recommendation-list">{active.map((item) => <RecommendationCard key={item.id} item={item} selected={selections.includes(item.id)} onSelect={() => onToggle(item.id)} onDislike={() => { setFeedback((items) => [...items, item.id]); void onFeedback(item) }} />)}</div> : <EmptyState title={researching ? 'This agent is still out exploring' : 'Nothing landed in this category'} detail={researching ? 'Results arrive independently, so you can browse while the others work.' : 'Run the research again to search a wider route.'} />}
         {feedback.length > 0 && <p className="feedback-note"><Check /> Preference noted. Tavi will use it when you refresh the shortlist.</p>}
       </section>
       <aside className="trip-docket">

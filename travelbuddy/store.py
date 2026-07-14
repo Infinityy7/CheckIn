@@ -55,6 +55,10 @@ def start_research(trip_id: str) -> None:
     state.research_in_progress = True
     state.research_results = []
     state.research_errors = []
+    # The previous recommendation IDs are about to be replaced. Keeping
+    # selections or an itinerary here would leave stale references behind.
+    state.selections = None
+    state.itinerary = None
 
 
 def finish_research(trip_id: str) -> None:

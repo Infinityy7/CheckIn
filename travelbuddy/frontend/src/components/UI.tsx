@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useEffect, useRef, type ReactNode } from 'react'
 import { AlertTriangle, Check, LoaderCircle, X } from 'lucide-react'
 import { Mascot } from './Mascot'
 
@@ -27,11 +27,29 @@ export function ErrorState({ message, onRetry }: { message: string; onRetry?: ()
 }
 
 export function Drawer({ open, title, onClose, children }: { open: boolean; title: string; onClose: () => void; children: ReactNode }) {
+  const drawerRef = useRef<HTMLElement>(null)
+  const closeRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const previous = document.activeElement as HTMLElement | null
+    closeRef.current?.focus()
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') { event.preventDefault(); onClose(); return }
+      if (event.key !== 'Tab' || !drawerRef.current) return
+      const focusable = [...drawerRef.current.querySelectorAll<HTMLElement>('button, input, textarea, select, [href], [tabindex]:not([tabindex="-1"])')].filter((item) => !item.hasAttribute('disabled'))
+      if (!focusable.length) return
+      const first = focusable[0]; const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => { document.removeEventListener('keydown', onKeyDown); previous?.focus() }
+  }, [open, onClose])
   if (!open) return null
   return <div className="drawer-layer" role="dialog" aria-modal="true" aria-label={title}>
     <button className="drawer-layer__scrim" aria-label="Close" onClick={onClose} />
-    <section className="drawer">
-      <header><div><span className="eyebrow">Character profile</span><h2>{title}</h2></div><button className="icon-button" aria-label="Close profile" onClick={onClose}><X /></button></header>
+    <section className="drawer" ref={drawerRef}>
+      <header><div><span className="eyebrow">Character profile</span><h2>{title}</h2></div><button ref={closeRef} className="icon-button" aria-label="Close profile" onClick={onClose}><X /></button></header>
       {children}
     </section>
   </div>

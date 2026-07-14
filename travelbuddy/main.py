@@ -26,6 +26,7 @@ from schemas import (
     ChatInput,
     Itinerary,
     LoginInput,
+    RecommendationFeedbackInput,
     Recommendation,
     RegisterInput,
     SelectionsInput,
@@ -185,6 +186,19 @@ async def reset_character_profile(user_id: str = Depends(auth.get_current_user))
     """Delete the saved profile so onboarding can be retaken."""
     profiles.reset_character_profile(user_id)
     return {"status": "reset", "intake_complete": False}
+
+
+@app.post("/api/profile/character/feedback")
+async def character_feedback(
+    body: RecommendationFeedbackInput,
+    user_id: str = Depends(auth.get_current_user),
+) -> dict:
+    """Record a like/dislike signal for the next recommendation ranking run."""
+    if profiles.load_sketch(user_id) is None:
+        raise HTTPException(status_code=404, detail="Character profile not created yet")
+    return profiles.apply_recommendation_feedback(
+        user_id, body.recommendation_name, body.category, body.sentiment
+    )
 
 
 # --- Trip endpoints ---

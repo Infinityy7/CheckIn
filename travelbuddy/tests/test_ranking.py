@@ -110,6 +110,14 @@ def test_budget_score_neutral_without_cost_data():
     assert budget_score(no_cost, prefs) == 0.5
 
 
+def test_budget_style_trait_changes_allowance():
+    prefs = make_prefs(budget_amount=1000)
+    hotel = make_rec(category="hotel", cost_min=100, cost_max=120)
+    strict = budget_score(hotel, prefs, {"traits": {"budgetStyle": "strict"}})
+    flexible = budget_score(hotel, prefs, {"traits": {"budgetStyle": "flexible"}})
+    assert flexible > strict
+
+
 def test_rank_orders_best_first_and_assigns_ranks():
     prefs = make_prefs(vibes=["food"])
     weak = make_rec(name="Meh Cafe", rating=3.2, review_count=40,

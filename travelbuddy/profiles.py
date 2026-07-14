@@ -135,6 +135,35 @@ def reset_character_profile(user_id: str) -> bool:
     return db.delete_profile(user_id, "self", "self")
 
 
+def apply_recommendation_feedback(
+    user_id: str,
+    recommendation_name: str,
+    category: str,
+    sentiment: str,
+) -> dict:
+    """Persist an explicit card preference so the next ranking run can use it."""
+    row = db.get_profile(user_id, "self")
+    if row is None:
+        raise ValueError("Character profile not created yet")
+    taste = get_taste(user_id) or {"likes": {}, "dislikes": {}, "diet": [], "pace": "moderate"}
+    likes = taste.setdefault("likes", {})
+    dislikes = taste.setdefault("dislikes", {})
+    term = recommendation_name.strip().lower()
+    if sentiment == "dislike":
+        dislikes[term] = 2
+        likes.pop(term, None)
+    else:
+        likes[term] = 2
+        dislikes.pop(term, None)
+    taste.setdefault("feedback", []).append({
+        "recommendation": recommendation_name.strip(),
+        "category": category.strip().lower(),
+        "sentiment": sentiment,
+    })
+    db.save_profile(user_id, "self", "self", "self", row["sketch_md"], json.dumps(taste))
+    return get_character_profile(user_id) or {}
+
+
 def load_cotraveller(user_id: str, name: str) -> str | None:
     row = db.get_profile(user_id, "cotraveller", slugify(name))
     if row is None:

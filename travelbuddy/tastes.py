@@ -97,6 +97,80 @@ def any_term_matches(term, text):
     return False
 
 
+def _observed_trait(rec, positive_terms, negative_terms, metadata_value=None):
+    """Infer a 0..1 trait direction from structured metadata and user-facing copy."""
+    if metadata_value is not None:
+        low = str(metadata_value).lower()
+        if low in {"high", "lively", "social", "luxury"}:
+            return 0.9
+        if low in {"moderate", "balanced", "casual"}:
+            return 0.55
+        if low in {"low", "quiet", "intimate", "private"}:
+            return 0.15
+    text = searchable_text(rec)
+    positive = any(term in text for term in positive_terms)
+    negative = any(term in text for term in negative_terms)
+    if positive and not negative:
+        return 0.9
+    if negative and not positive:
+        return 0.1
+    return 0.5
+
+
+def trait_score(rec, taste):
+    """Score recommendation metadata/copy against the editable UI trait model."""
+    traits = (taste or {}).get("traits")
+    if not isinstance(traits, dict) or not traits:
+        return (0.5, [])
+
+    observations = {
+        "adventureLevel": _observed_trait(
+            rec, ["adventure", "hike", "thrill", "backroad", "unusual"],
+            ["gentle", "easy", "relaxed"], rec.metadata.get("physical_intensity")
+        ),
+        "socialPreference": _observed_trait(
+            rec, ["lively", "social", "communal", "group", "nightlife"],
+            ["quiet", "private", "intimate", "secluded"], rec.metadata.get("vibe")
+        ),
+        "comfortPreference": _observed_trait(
+            rec, ["luxury", "premium", "comfortable", "private transfer", "boutique"],
+            ["hostel", "rugged", "basic", "shared room"]
+        ),
+        "spontaneity": 0.15 if rec.metadata.get("booking_required") is True or rec.metadata.get("reservation_needed") is True else 0.75,
+        "localVsTourist": _observed_trait(
+            rec, ["local", "neighborhood", "authentic", "insider", "market", "family-run"],
+            ["touristy", "tourist", "iconic landmark", "must-see crowds"]
+        ),
+        "nightlifeInterest": _observed_trait(
+            rec, ["night", "bar", "club", "evening", "lively"],
+            ["early morning", "dawn", "quiet evening"]
+        ),
+        "natureVsUrban": _observed_trait(
+            rec, ["nature", "forest", "trail", "garden", "mountain", "coast"],
+            ["downtown", "city center", "urban", "shopping district"]
+        ),
+    }
+    if rec.category == "restaurant":
+        observations["foodAdventurousness"] = _observed_trait(
+            rec, ["street food", "tasting", "unusual", "regional", "chef's counter"],
+            ["familiar", "international chain", "classic comfort"]
+        )
+
+    fits = []
+    matched = []
+    for key, observed in observations.items():
+        value = traits.get(key)
+        if not isinstance(value, (int, float)):
+            continue
+        fit = 1.0 - abs(max(0.0, min(1.0, float(value))) - observed)
+        fits.append(fit)
+        if fit >= 0.75:
+            matched.append("trait: " + key)
+    if not fits:
+        return (0.5, [])
+    return (sum(fits) / len(fits), matched)
+
+
 def taste_score(rec, taste):
     """Score a rec against one person's taste vector. Returns (score, matched, violated)."""
     if not taste:
@@ -124,6 +198,10 @@ def taste_score(rec, taste):
         affinity = 0.5
 
     score = affinity
+    traits, trait_matches = trait_score(rec, taste)
+    if isinstance(taste.get("traits"), dict) and taste["traits"]:
+        score = 0.7 * affinity + 0.3 * traits
+        matched.extend(trait_matches)
 
     # soft dislikes chip away at the score; strength-3 ones are
     # handled as dealbreakers elsewhere, not here
@@ -234,4 +312,5 @@ def profile_confidence(taste):
         return 0.0
     likes = taste.get("likes") or {}
     dislikes = taste.get("dislikes") or {}
-    return min(1.0, (len(likes) + len(dislikes)) / 10)
+    traits = taste.get("traits") if isinstance(taste.get("traits"), dict) else {}
+    return min(1.0, (len(likes) + len(dislikes) + len(traits) * 0.5) / 10)

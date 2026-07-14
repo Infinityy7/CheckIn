@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Compass, LogOut, Plus, UserRound } from 'lucide-react'
+import { Compass, LogOut, Plus, Sparkles, UserRound } from 'lucide-react'
 import { api, ApiError } from './services/api'
 import type { CharacterProfile, Itinerary, Recommendation, StreamEvent, TripPreferences, TripState, User } from './types'
 import { AuthView } from './components/AuthView'
@@ -27,6 +27,7 @@ export default function App() {
   const [profileOpen, setProfileOpen] = useState(false)
   const [loading, setLoading] = useState(api.hasSession())
   const [error, setError] = useState('')
+  const [taviVisible, setTaviVisible] = useState(() => localStorage.getItem('travelbuddy.tavi') !== 'hidden')
 
   // Session bootstrap runs exactly once; subsequent refreshes are explicit user actions.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -69,6 +70,7 @@ export default function App() {
   async function runResearch(tripId = trip?.trip_id) {
     if (!tripId) return
     setResearching(true); setError(''); setRecommendations([]); setAgents(initialAgents)
+    setSelections([]); setItinerary(null)
     try {
       await api.research(tripId, (event: StreamEvent) => {
         if (event.event === 'agent_started' && event.agent) setAgents((current) => ({ ...current, [event.agent!]: 'working' }))
@@ -101,11 +103,18 @@ export default function App() {
   if (!user) return <AuthView onAuthenticated={bootstrap} />
   if (!user.intake_complete || !profile) return <Onboarding onComplete={(next) => { setProfile(next); setUser({ ...user, intake_complete: true }); setScreen('planner') }} />
 
-  return <div className="app-shell">
-    <nav className="app-nav"><button className="brand-button" onClick={() => setScreen('planner')}><Brand /></button><div className="nav-route"><Compass /><span>{trip ? trip.preferences.destination : 'No active trip'}</span>{trip && <small>{screen}</small>}</div><div className="nav-actions"><Button variant="quiet" onClick={() => { setScreen('planner'); setTrip(null); localStorage.removeItem('travelbuddy.lastTrip') }}><Plus /> New trip</Button><button className="profile-button" onClick={() => setProfileOpen(true)}><UserRound /><span>{user.email.split('@')[0]}<small>Character profile</small></span></button><button className="icon-button" onClick={logout} aria-label="Log out"><LogOut /></button></div></nav>
+  function toggleTavi() {
+    setTaviVisible((visible) => {
+      localStorage.setItem('travelbuddy.tavi', visible ? 'hidden' : 'visible')
+      return !visible
+    })
+  }
+
+  return <div className={`app-shell ${taviVisible ? '' : 'app-shell--tavi-hidden'}`}>
+    <nav className="app-nav"><button className="brand-button" onClick={() => setScreen('planner')}><Brand /></button><div className="nav-route"><Compass /><span>{trip ? trip.preferences.destination : 'No active trip'}</span>{trip && <small>{screen}</small>}</div><div className="nav-actions"><Button variant="quiet" onClick={() => { setScreen('planner'); setTrip(null); localStorage.removeItem('travelbuddy.lastTrip') }}><Plus /> New trip</Button><button className="icon-button" onClick={toggleTavi} aria-label={taviVisible ? 'Minimize Tavi' : 'Show Tavi'} aria-pressed={!taviVisible}><Sparkles /></button><button className="profile-button" onClick={() => setProfileOpen(true)}><UserRound /><span>{user.email.split('@')[0]}<small>Character profile</small></span></button><button className="icon-button" onClick={logout} aria-label="Log out"><LogOut /></button></div></nav>
     {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')}>Dismiss</button></div>}
     {screen === 'planner' && <TripForm onSubmit={createTrip} busy={loading} />}
-    {screen === 'workspace' && trip && <Workspace destination={trip.preferences.destination} preferences={trip.preferences} profile={profile} recommendations={recommendations} agents={agents} researching={researching} selections={selections} onToggle={(id) => setSelections((items) => items.includes(id) ? items.filter((item) => item !== id) : [...items, id])} onAlternatives={() => runResearch()} onBuild={buildItinerary} />}
+    {screen === 'workspace' && trip && <Workspace destination={trip.preferences.destination} preferences={trip.preferences} profile={profile} recommendations={recommendations} agents={agents} researching={researching} selections={selections} onToggle={(id) => setSelections((items) => items.includes(id) ? items.filter((item) => item !== id) : [...items, id])} onAlternatives={() => runResearch()} onFeedback={async (item) => { const next = await api.feedback(item, 'dislike'); setProfile(next) }} onBuild={buildItinerary} />}
     {screen === 'itinerary' && itinerary && trip && <ItineraryView itinerary={itinerary} preferences={trip.preferences} onBack={() => setScreen('workspace')} />}
     {building && <div className="build-overlay"><LoadingState title="Shaping your final route" detail="Balancing time, cost, geography, and your preferred pace…" /></div>}
     {!trip && screen !== 'planner' && <ErrorState message="This trip is no longer available. Start a fresh route." onRetry={() => setScreen('planner')} />}
