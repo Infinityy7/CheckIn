@@ -12,7 +12,7 @@ Requirements: Python 3.11+, Node.js 20+, and an OpenAI API key.
 cd travelbuddy
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 cp .env.example .env
 cd frontend
 npm install
@@ -97,5 +97,15 @@ The Playwright suite launches FastAPI on port 8010, verifies onboarding, returni
 - Recommendation feedback is stored in the taste profile and affects the next research/ranking run.
 - Share copies the current URL and export uses the browser’s print/PDF support; there is no hosted share document or booking provider integration.
 - Destination imagery is intentionally represented with map motifs until a licensed image/search proxy is exposed by the backend.
+
+## Reliability baseline
+
+- Failed JSON responses use one stable error shape with a safe message, code, retry flag, and request ID.
+- `X-Request-ID` is returned on every API response and appears in server logs for support tracing.
+- Research categories fail independently; completed results stay visible and failed categories can be retried.
+- Provider details stay in internal logs rather than leaking into the UI.
+- Direct Python and frontend dependencies are locked to the tested versions in `requirements.txt`, `requirements-dev.txt`, and `frontend/package-lock.json`.
+
+See [docs/RELIABILITY.md](docs/RELIABILITY.md) for the contract, retry rules, and intentionally deferred architecture work.
 
 See [docs/FRONTEND_ARCHITECTURE.md](docs/FRONTEND_ARCHITECTURE.md) for component and integration details.

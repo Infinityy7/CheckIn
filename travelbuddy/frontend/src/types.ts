@@ -105,5 +105,10 @@ export interface StreamEvent {
   results?: Recommendation[]
   brief?: string
   error?: string
+  code?: string
+  request_id?: string
+  retryable?: boolean
+  completed?: number
+  failed?: number
   itinerary?: Itinerary
 }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from typing import AsyncGenerator
 
 from agents import AccommodationAgent, ActivitiesAgent, RestaurantAgent, TransportAgent
@@ -13,6 +14,14 @@ from prompts.context_brief import build_context_brief_prompt
 from schemas import AgentResult, TripPreferences
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class AgentFailure:
+    """Internal marker that keeps provider details out of the public event stream."""
+
+    agent_name: str
+    message: str
 
 
 async def generate_context_brief(
@@ -52,13 +61,16 @@ async def _run_agent(
     context_brief: str,
     user_taste: dict | None = None,
     cotraveller_tastes: list[dict] | None = None,
-) -> AgentResult | str:
-    """Run a single agent, returning the result or an error string on failure."""
+) -> AgentResult | AgentFailure:
+    """Run one agent and return a user-safe failure when it cannot finish."""
     try:
         return await agent.run(prefs, context_brief, user_taste, cotraveller_tastes)
     except Exception as exc:
         logger.error("Agent %s failed: %s", agent.agent_name, exc, exc_info=True)
-        return f"{agent.agent_name}: {exc}"
+        return AgentFailure(
+            agent_name=agent.agent_name,
+            message=f"{agent.agent_name} could not finish this search. You can retry safely.",
+        )
 
 
 def _get_agents() -> list[BaseAgent]:
@@ -90,7 +102,7 @@ async def run_agents_streaming(
     """
     agents = _get_agents()
 
-    async def _wrapped(agent: BaseAgent) -> tuple[BaseAgent, AgentResult | str]:
+    async def _wrapped(agent: BaseAgent) -> tuple[BaseAgent, AgentResult | AgentFailure]:
         return agent, await _run_agent(agent, prefs, context_brief, user_taste, cotraveller_tastes)
 
     for agent in agents:
@@ -98,19 +110,25 @@ async def run_agents_streaming(
 
     tasks = [asyncio.create_task(_wrapped(agent)) for agent in agents]
 
+    completed = 0
+    failed = 0
     for coro in asyncio.as_completed(tasks):
         agent, result = await coro
         if isinstance(result, AgentResult):
+            completed += 1
             yield {
                 "event": "agent_completed",
                 "agent": agent.agent_name,
                 "results": [r.model_dump() for r in result.recommendations],
             }
         else:
+            failed += 1
             yield {
                 "event": "agent_failed",
                 "agent": agent.agent_name,
-                "error": result,
+                "error": result.message,
+                "code": "AGENT_FAILED",
+                "retryable": True,
             }
 
-    yield {"event": "all_complete"}
+    yield {"event": "all_complete", "completed": completed, "failed": failed}

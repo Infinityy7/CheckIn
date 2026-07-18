@@ -10,11 +10,13 @@ import time
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 import auth
+import api_errors
 import db
 import profiles
 from config import ALLOWED_ORIGINS, LOG_LEVEL
@@ -68,22 +70,37 @@ app.add_middleware(
     allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=[api_errors.REQUEST_ID_HEADER],
 )
+
+app.add_exception_handler(HTTPException, api_errors.http_exception_handler)
+app.add_exception_handler(RequestValidationError, api_errors.validation_exception_handler)
+app.add_exception_handler(Exception, api_errors.unexpected_exception_handler)
 
 
 # --- Request logging middleware ---
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    """Log every incoming request with method, path, and response time."""
+    """Attach a support-friendly request ID and log timing without user secrets."""
+    request.state.request_id = api_errors.request_id_for(request)
     start = time.time()
-    response = await call_next(request)
-    elapsed_ms = (time.time() - start) * 1000
-    logger.info(
-        "%s %s → %d (%.0fms)",
-        request.method, request.url.path, response.status_code, elapsed_ms,
-    )
-    return response
+    response = None
+    try:
+        response = await call_next(request)
+        response.headers[api_errors.REQUEST_ID_HEADER] = request.state.request_id
+        return response
+    finally:
+        elapsed_ms = (time.time() - start) * 1000
+        status = response.status_code if response is not None else 500
+        logger.info(
+            "[%s] %s %s → %d (%.0fms)",
+            request.state.request_id,
+            request.method,
+            request.url.path,
+            status,
+            elapsed_ms,
+        )
 
 
 # --- Helpers ---
@@ -231,7 +248,11 @@ async def submit_preferences(
 
 
 @app.post("/api/trip/{trip_id}/research")
-async def research_trip(trip_id: str, user_id: str = Depends(auth.get_current_user)):
+async def research_trip(
+    trip_id: str,
+    request: Request,
+    user_id: str = Depends(auth.get_current_user),
+):
     """Run all 4 agents and stream results via Server-Sent Events.
 
     Each agent's results are streamed as soon as it finishes — the client
@@ -293,8 +314,21 @@ async def research_trip(trip_id: str, user_id: str = Depends(auth.get_current_us
                 yield _sse(event)
         except Exception as exc:
             # response already started, so send an error event instead of just dying
-            logger.error("Research stream failed: %s", exc, exc_info=True)
-            yield _sse({"event": "error", "error": str(exc)})
+            logger.error(
+                "[%s] Research stream failed: %s",
+                request.state.request_id,
+                exc,
+                exc_info=True,
+            )
+            yield _sse(api_errors.stream_problem(
+                request,
+                event="error",
+                code="RESEARCH_INTERRUPTED",
+                message=(
+                    "Research stopped before every category finished. "
+                    "Any completed results are still available, and you can retry safely."
+                ),
+            ))
         finally:
             finish_research(trip_id)
 
@@ -340,7 +374,11 @@ async def select_recommendations(
 
 
 @app.post("/api/trip/{trip_id}/itinerary")
-async def generate_trip_itinerary(trip_id: str, user_id: str = Depends(auth.get_current_user)):
+async def generate_trip_itinerary(
+    trip_id: str,
+    request: Request,
+    user_id: str = Depends(auth.get_current_user),
+):
     """Generate a day-by-day itinerary from saved preferences and selections.
 
     Streams progress via Server-Sent Events.
@@ -381,8 +419,21 @@ async def generate_trip_itinerary(trip_id: str, user_id: str = Depends(auth.get_
                 profiles.update_sketch_from_trip(user_id, state.preferences, picked, skipped)
             )
         except Exception as exc:
-            logger.error("Itinerary generation failed: %s", exc, exc_info=True)
-            yield _sse({"event": "itinerary_failed", "error": str(exc)})
+            logger.error(
+                "[%s] Itinerary generation failed: %s",
+                request.state.request_id,
+                exc,
+                exc_info=True,
+            )
+            yield _sse(api_errors.stream_problem(
+                request,
+                event="itinerary_failed",
+                code="ITINERARY_FAILED",
+                message=(
+                    "The itinerary could not be finished. Your selections are saved, "
+                    "so it is safe to try again."
+                ),
+            ))
 
     return StreamingResponse(
         event_stream(),

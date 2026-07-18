@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { ArrowRight, BedDouble, Bike, Check, ChevronRight, Clock3, Coffee, HeartOff, Map, RefreshCw, Sparkles, Star, TrainFront, UtensilsCrossed } from 'lucide-react'
+import { AlertTriangle, ArrowRight, BedDouble, Bike, Check, ChevronRight, Clock3, Coffee, HeartOff, Map, RefreshCw, Sparkles, Star, TrainFront, UtensilsCrossed } from 'lucide-react'
 import type { CharacterProfile, Recommendation, TripPreferences } from '../types'
 import { Mascot } from './Mascot'
 import { Button, EmptyState } from './UI'
@@ -48,27 +48,39 @@ export function Workspace({ destination, preferences, profile, recommendations, 
   const [feedback, setFeedback] = useState<string[]>([])
   const active = recommendations.filter((item) => item.category === category).sort((a,b) => a.rank - b.rank)
   const completed = Object.values(agents).filter((state) => state === 'complete').length
+  const failed = Object.values(agents).filter((state) => state === 'failed').length
   const selectedItems = useMemo(() => recommendations.filter((item) => selections.includes(item.id)), [recommendations, selections])
+
+  async function recordFeedback(item: Recommendation) {
+    try {
+      await onFeedback(item)
+      setFeedback((items) => [...items, item.id])
+    } catch {
+      // App owns the global error notice; avoid an unhandled rejected promise here.
+    }
+  }
 
   return <main className="workspace page-stage">
     <header className="workspace-hero">
       <div><span className="eyebrow">LIVE TRIP WORKSPACE · {preferences.start_date.slice(5).replace('-', '.')}—{preferences.end_date.slice(5).replace('-', '.')}</span><h1>{destination}</h1><p>{preferences.vibes.join(' · ')} · {preferences.num_travelers} travelers · {preferences.currency} {preferences.budget_amount.toLocaleString()}</p></div>
-      <div className="workspace-stage"><span>{researching ? 'Research in motion' : 'Recommendations ready'}</span><b>{completed}/4 agents</b><div><i style={{ width: `${completed * 25}%` }} /></div></div>
+      <div className="workspace-stage"><span>{researching ? 'Research in motion' : failed ? 'Partial results ready' : 'Recommendations ready'}</span><b>{completed}/4 agents</b><div><i style={{ width: `${completed * 25}%` }} /></div></div>
     </header>
 
     <section className="agent-rail" aria-label="Research agents">
       {Object.entries(agents).map(([name, status], index) => <div className={`agent-node agent-node--${status}`} key={name}>
-        <span>{status === 'complete' ? <Check /> : status === 'working' ? <span className="pulse-dot" /> : index + 1}</span>
-        <div><small>{status.toUpperCase()}</small><strong>{name.replace('Agent','')}</strong><p>{status === 'working' ? 'Searching, comparing, and checking fit…' : status === 'complete' ? 'Top three ranked' : 'Queued with your character profile'}</p></div>
+        <span>{status === 'complete' ? <Check /> : status === 'failed' ? <AlertTriangle /> : status === 'working' ? <span className="pulse-dot" /> : index + 1}</span>
+        <div><small>{status.toUpperCase()}</small><strong>{name.replace('Agent','')}</strong><p>{status === 'working' ? 'Searching, comparing, and checking fit…' : status === 'complete' ? 'Top three ranked' : status === 'failed' ? 'Could not finish — retry available' : 'Queued with your character profile'}</p></div>
       </div>)}
-      <div className="agent-tavi"><Mascot state={researching ? 'thinking' : 'excited'} size="sm" /><p>{researching ? 'I’m cross-checking value against your pace.' : 'Your shortlist is ready to shape.'}</p></div>
+      <div className="agent-tavi"><Mascot state={researching ? 'thinking' : failed ? 'confused' : 'excited'} size="sm" /><p>{researching ? 'I’m cross-checking value against your pace.' : failed ? 'I kept the successful results. We can retry the missing route.' : 'Your shortlist is ready to shape.'}</p></div>
     </section>
+
+    {failed > 0 && !researching && <section className="partial-results" role="status"><AlertTriangle /><div><strong>{failed} research {failed === 1 ? 'category needs' : 'categories need'} another try</strong><p>Your completed recommendations are still here. Retrying safely refreshes the full shortlist.</p></div><Button variant="secondary" onClick={onAlternatives}><RefreshCw /> Retry research</Button></section>}
 
     <div className="workspace-layout">
       <section className="recommendations-panel">
         <div className="section-heading"><div><span className="eyebrow">Ranked for your character</span><h2>The shortlist</h2></div><button className="alternative-button" onClick={onAlternatives} disabled={researching}><RefreshCw /> Show alternatives</button></div>
         <div className="category-tabs" role="tablist">{categories.map(({ id, label, icon: Icon }) => <button role="tab" aria-selected={category === id} className={category === id ? 'is-active' : ''} key={id} onClick={() => setCategory(id)}><Icon />{label}<span>{recommendations.filter((item) => item.category === id).length}</span></button>)}</div>
-        {active.length ? <div className="recommendation-list">{active.map((item) => <RecommendationCard key={item.id} item={item} selected={selections.includes(item.id)} onSelect={() => onToggle(item.id)} onDislike={() => { setFeedback((items) => [...items, item.id]); void onFeedback(item) }} />)}</div> : <EmptyState title={researching ? 'This agent is still out exploring' : 'Nothing landed in this category'} detail={researching ? 'Results arrive independently, so you can browse while the others work.' : 'Run the research again to search a wider route.'} />}
+        {active.length ? <div className="recommendation-list">{active.map((item) => <RecommendationCard key={item.id} item={item} selected={selections.includes(item.id)} onSelect={() => onToggle(item.id)} onDislike={() => void recordFeedback(item)} />)}</div> : <EmptyState title={researching ? 'This agent is still out exploring' : 'Nothing landed in this category'} detail={researching ? 'Results arrive independently, so you can browse while the others work.' : 'Run the research again to search a wider route.'} action={!researching ? <Button variant="secondary" onClick={onAlternatives}><RefreshCw /> Retry research</Button> : undefined} />}
         {feedback.length > 0 && <p className="feedback-note"><Check /> Preference noted. Tavi will use it when you refresh the shortlist.</p>}
       </section>
       <aside className="trip-docket">

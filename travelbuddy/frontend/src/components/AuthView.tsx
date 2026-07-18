@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { ArrowRight, Compass, Map, Sparkles } from 'lucide-react'
-import { api } from '../services/api'
+import { api, userErrorMessage } from '../services/api'
 import { Mascot } from './Mascot'
 import { Brand, Button } from './UI'
 
@@ -14,7 +14,7 @@ export function AuthView({ onAuthenticated }: { onAuthenticated: () => void }) {
   async function submit(event: React.FormEvent) {
     event.preventDefault(); setBusy(true); setError('')
     try { await api.auth(mode, email, password); onAuthenticated() }
-    catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not sign you in.') }
+    catch (reason) { setError(userErrorMessage(reason, 'Could not sign you in.')) }
     finally { setBusy(false) }
   }
 

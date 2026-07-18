@@ -160,6 +160,53 @@ A balanced traveler who values local food and quieter cultural experiences.
     saved = client.get(f"/api/trip/{trip_id}", headers=headers).json()
     assert saved["itinerary"]["trip_title"] == "Kyoto Between Lanterns"
 
+    async def failed_itinerary_builder(*_args, **_kwargs):
+        raise RuntimeError("provider-secret-that-must-not-reach-the-browser")
+
+    monkeypatch.setattr(main, "generate_itinerary", failed_itinerary_builder)
+    failed_generation = client.post(
+        f"/api/trip/{trip_id}/itinerary",
+        headers={**headers, "X-Request-ID": "itinerary-test-request"},
+    )
+    assert '"code": "ITINERARY_FAILED"' in failed_generation.text
+    assert "provider-secret" not in failed_generation.text
+    assert '"request_id": "itinerary-test-request"' in failed_generation.text
+
     reset = client.post("/api/profile/character/reset", headers=headers)
     assert reset.json()["intake_complete"] is False
     assert client.get("/api/auth/me", headers=headers).json()["intake_complete"] is False
+
+
+def test_json_errors_have_a_stable_shape_and_request_id():
+    client = TestClient(main.app)
+    response = client.get(
+        "/api/auth/me",
+        headers={"X-Request-ID": "support-case-123"},
+    )
+
+    assert response.status_code == 401
+    assert response.headers["X-Request-ID"] == "support-case-123"
+    assert response.json() == {
+        "detail": "Not logged in",
+        "error": {
+            "code": "UNAUTHORIZED",
+            "message": "Not logged in",
+            "request_id": "support-case-123",
+            "retryable": False,
+        },
+    }
+
+
+def test_validation_errors_are_readable():
+    client = TestClient(main.app)
+    response = client.post(
+        "/api/auth/register",
+        json={"email": "not-an-email", "password": "short"},
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"]["code"] == "VALIDATION_ERROR"
+    assert body["error"]["request_id"]
+    assert body["error"]["details"]
+    assert isinstance(body["detail"], str)

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { ArrowRight, Check, Pencil, RotateCcw, Send } from 'lucide-react'
-import { api } from '../services/api'
+import { api, userErrorMessage } from '../services/api'
 import type { CharacterProfile } from '../types'
 import { Mascot } from './Mascot'
 import { Button, ChatBubble, ErrorState, LoadingState } from './UI'
@@ -32,12 +32,15 @@ export function Onboarding({ onComplete }: { onComplete: (profile: CharacterProf
       const response = await api.profileChat(message)
       setMessages((items) => [...items, { from: 'tavi', text: response.reply }])
       if (response.done) setProfile(await api.profile())
-    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Tavi lost the thread for a moment.') }
+    } catch (reason) { setError(userErrorMessage(reason, 'Tavi lost the thread for a moment.')) }
     finally { setBusy(false); setAnswer('') }
   }
 
   async function retake() {
-    await api.resetProfile(); setMessages([]); setProfile(null); setAnswers(0); setBusy(true); started.current = true; await ask('')
+    setBusy(true); setError('')
+    try { await api.resetProfile(); setMessages([]); setProfile(null); setAnswers(0); started.current = true; await ask('') }
+    catch (reason) { setError(userErrorMessage(reason, 'Could not restart the conversation.')) }
+    finally { setBusy(false) }
   }
 
   if (profile) return <main className="profile-reveal page-stage">
