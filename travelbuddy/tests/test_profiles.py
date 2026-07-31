@@ -108,10 +108,10 @@ def test_keyword_fallback_taste():
 
 
 def test_taste_distinguishes_recs():
-    # the taste vector separates recs that trip vibes alone can't
-    _clean, taste = parse_taste(SKETCH_WITH_TASTE)
-    temple_walk = make_rec(name="Old Temple Walk", description="A quiet cultural temple stroll.")
-    mall_trip = make_rec(name="Mega Mall", description="A big cultural shopping complex.")
+    # Structured tags, never generated prose, separate candidates.
+    taste = {"vibe_weights": {"culture": 0.8, "shopping": 0.2}}
+    temple_walk = make_rec(name="Old Temple Walk", vibe_tags=["culture"])
+    mall_trip = make_rec(name="Mega Mall", vibe_tags=["shopping"])
     temple_score = taste_score(temple_walk, taste)[0]
     mall_score = taste_score(mall_trip, taste)[0]
     assert temple_score > mall_score
@@ -122,15 +122,13 @@ def test_auth_register_login_roundtrip(tmp_path):
     db.DB_PATH = tmp_path / "t.db"
     db._conn = None
     db.init_db()
-    auth._sessions = {}
-
     token = auth.register("test@example.com", "supersecret1")
-    user_id = auth._sessions[token]
+    user_id = db.get_user_by_email("test@example.com")["user_id"]
     assert user_id
 
     # right password works, wrong one doesn't
     token2 = auth.login("test@example.com", "supersecret1")
-    assert auth._sessions[token2] == user_id
+    assert auth.get_current_user(f"Bearer {token2}") == user_id
     try:
         auth.login("test@example.com", "wrongpassword")
         assert False, "wrong password should have been rejected"
@@ -170,7 +168,7 @@ An unhurried traveler who follows food and avoids crowded group experiences.
     edited = update_character_profile(
         "profile-user",
         "A thoughtful traveler who now wants a little more momentum and local food.",
-        {**profile["traits"], "pace": "fast", "localVsTourist": 0.9},
+        traits={**profile["traits"], "pace": "fast", "localVsTourist": 0.9},
     )
     assert edited["traits"]["pace"] == "fast"
     assert "more momentum" in edited["summary"]

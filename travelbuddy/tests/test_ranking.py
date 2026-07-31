@@ -59,9 +59,9 @@ def test_rating_score_damps_unreviewed_ratings():
 
 def test_vibe_score_counts_matched_vibes():
     prefs = make_prefs(vibes=["food", "culture"])
-    both = make_rec(description="A cultural food market experience.")
-    one = make_rec(description="A famous food market.")
-    neither = make_rec(description="A quiet park.", reasoning="Nice.", name="Park")
+    both = make_rec(description="Unimportant prose.", vibe_tags=["culture", "food"])
+    one = make_rec(description="Culture and food words do not matter.", vibe_tags=["food"])
+    neither = make_rec(description="A cultural food market.", reasoning="Nice.", name="Park", vibe_tags=[])
     assert vibe_score(both, prefs) == 1.0
     assert vibe_score(one, prefs) == 0.5
     assert vibe_score(neither, prefs) == 0.0
@@ -140,3 +140,12 @@ def test_scores_stay_in_unit_range():
     extreme = make_rec(rating=5.0, review_count=10**6, cost_min=1, cost_max=2)
     ranked = rank_recommendations([extreme], prefs)
     assert 0.0 <= ranked[0].score <= 1.0
+
+
+def test_hard_constraint_removes_candidate_before_ranking():
+    prefs = make_prefs()
+    blocked = make_rec(name="Theme Park", constraint_tags=["theme_parks"], vibe_tags=["adventure"])
+    safe = make_rec(name="Museum", vibe_tags=["culture"])
+    taste = {"dealbreakers": ["theme_parks"], "vibe_weights": {"culture": 1.0}}
+    ranked = rank_recommendations([blocked, safe], prefs, taste)
+    assert [item.name for item in ranked] == ["Museum"]

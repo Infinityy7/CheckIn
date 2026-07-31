@@ -5,9 +5,15 @@ from __future__ import annotations
 import uuid
 from datetime import date
 from enum import Enum
-from typing import Optional
+from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from personalization import (
+    CANDIDATE_DEALBREAKER_TAGS,
+    DIETARY_REQUIREMENTS,
+    PROFILE_VIBES,
+)
 
 
 # --- Input schemas ---
@@ -20,10 +26,10 @@ class GroupType(str, Enum):
     FAMILY = "family"
 
 
-ALLOWED_VIBES = [
-    "adventure", "culture", "food", "nightlife", "relaxation",
-    "nature", "shopping", "history", "romance", "family-friendly",
-]
+# The persistent profile uses the document's exact ten-vibe vocabulary.
+# family-friendly remains a supported trip override for backwards compatibility;
+# party suitability itself is a structured constraint, not a learned vibe.
+ALLOWED_VIBES = [*PROFILE_VIBES, "family-friendly"]
 
 # rough static rates to USD, good enough for budget scoring.
 # also doubles as the list of currencies the app accepts
@@ -95,11 +101,58 @@ class Recommendation(BaseModel):
     location: str = Field(..., description="Neighborhood or area within destination")
     image_search_query: str = Field(..., description="Query to find a representative photo")
     metadata: dict = Field(default_factory=dict, description="Agent-specific extra info")
+    vibe_tags: list[str] = Field(
+        default_factory=list,
+        description="Controlled profile-vibe tags verified for this candidate",
+    )
+    constraint_tags: list[str] = Field(
+        default_factory=list,
+        description="Controlled hard-constraint tags carried by this candidate",
+    )
+    dietary_tags: list[str] = Field(
+        default_factory=list,
+        description="Verified dietary requirements this candidate can accommodate",
+    )
+    # Transitional aliases for older stored research payloads. New agents emit
+    # constraint_tags and dietary_tags; the ranker reads both during migration.
+    dealbreaker_tags: list[str] = Field(default_factory=list)
+    dietary_accommodations: list[str] = Field(default_factory=list)
+    dietary_conflicts: list[str] = Field(
+        default_factory=list,
+        description="Verified dietary requirements this candidate conflicts with",
+    )
 
     # these get filled in by ranking.py, not the LLM
     rank: int = Field(0, description="1 = best. Assigned by our ranking algorithm, not the LLM")
     score: float = Field(0.0, description="Composite 0..1 score from the ranking algorithm")
     score_breakdown: dict = Field(default_factory=dict, description="Per-signal scores: rating/vibes/budget/total")
+
+    @field_validator("vibe_tags")
+    @classmethod
+    def controlled_vibe_tags(cls, value: list[str]) -> list[str]:
+        clean = list(dict.fromkeys(str(tag).strip().lower() for tag in value))
+        invalid = [tag for tag in clean if tag not in PROFILE_VIBES]
+        if invalid:
+            raise ValueError(f"Unknown vibe tags: {invalid}")
+        return clean
+
+    @field_validator("constraint_tags", "dealbreaker_tags")
+    @classmethod
+    def controlled_dealbreaker_tags(cls, value: list[str]) -> list[str]:
+        clean = list(dict.fromkeys(str(tag).strip().lower() for tag in value))
+        invalid = [tag for tag in clean if tag not in CANDIDATE_DEALBREAKER_TAGS]
+        if invalid:
+            raise ValueError(f"Unknown dealbreaker tags: {invalid}")
+        return clean
+
+    @field_validator("dietary_tags", "dietary_accommodations", "dietary_conflicts")
+    @classmethod
+    def controlled_dietary_tags(cls, value: list[str]) -> list[str]:
+        clean = list(dict.fromkeys(str(tag).strip().lower() for tag in value))
+        invalid = [tag for tag in clean if tag not in DIETARY_REQUIREMENTS]
+        if invalid:
+            raise ValueError(f"Unknown dietary tags: {invalid}")
+        return clean
 
 
 class AgentResult(BaseModel):
@@ -182,17 +235,48 @@ class ChatInput(BaseModel):
 
 class CharacterProfileUpdate(BaseModel):
     """Editable, user-facing fields from the persistent character profile."""
+    model_config = ConfigDict(populate_by_name=True)
+
     summary: str = Field(..., min_length=20, max_length=2000)
-    traits: dict[str, str | float] = Field(default_factory=dict)
+    traits: Optional[dict[str, str | float]] = None
+    character_md: Optional[str] = Field(None, alias="characterMd", max_length=5000)
+    weights: Optional[dict[str, Any]] = None
+    expected_version: Optional[int] = Field(None, alias="expectedVersion", ge=1)
 
 
 class RecommendationFeedbackInput(BaseModel):
-    """A lightweight preference signal captured from a recommendation card."""
-    recommendation_name: str = Field(..., min_length=1, max_length=160)
-    category: str = Field(..., min_length=1, max_length=40)
+    """An owned recommendation-card signal resolved server-side by ID."""
+    trip_id: str = Field(..., min_length=1, max_length=128)
+    recommendation_id: str = Field(..., min_length=1, max_length=128)
     sentiment: str = Field(..., pattern="^(like|dislike)$")
+
+
+class IntakeAnswerInput(BaseModel):
+    """Value body for PUT /intake/answers/{question_id}."""
+    value: Any
+
+
+class PostTripFeedbackInput(BaseModel):
+    """Post-trip rating; identity/idempotency are derived server-side."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    overall_rating: Literal[1, 2, 3, 4, 5] = Field(..., alias="overallRating")
+
+
+class PostTripState(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    eligible: bool = False
+    eligible_at: Optional[str] = Field(None, alias="eligibleAt")
+    rating: Optional[Literal[1, 2, 3, 4, 5]] = None
+    submitted_at: Optional[str] = Field(None, alias="submittedAt")
+    adjustments: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class TripState(BaseModel):
     """Full state of a trip, persisted in the in-memory store."""
+    model_config = ConfigDict(populate_by_name=True)
+
     trip_id: str
     user_id: str = ""  # who owns this trip
     preferences: TripPreferences
@@ -201,5 +285,6 @@ class TripState(BaseModel):
     research_errors: Optional[list[str]] = None
     selections: Optional[list[str]] = None
     itinerary: Optional[Itinerary] = None
+    post_trip: Optional[PostTripState] = Field(None, alias="postTrip")
     research_in_progress: bool = False
     created_at: str

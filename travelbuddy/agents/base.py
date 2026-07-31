@@ -83,6 +83,13 @@ class BaseAgent(ABC):
                 continue
 
             ranked = rank_recommendations(candidates, prefs, user_taste, cotraveller_tastes)
+            if len(ranked) < MIN_VALID_CANDIDATES:
+                last_error = ValueError(
+                    f"Only {len(ranked)} candidates survived hard constraints "
+                    f"(need {MIN_VALID_CANDIDATES})"
+                )
+                logger.warning("[%s] attempt %d failed: %s", self.agent_name, attempt, last_error)
+                continue
             top = ranked[:RESULTS_RETURNED]
             logger.info(
                 "[%s] %d valid candidates, kept top %d (best: '%s', score %.3f)",

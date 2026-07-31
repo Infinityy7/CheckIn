@@ -36,6 +36,12 @@ For each recommendation:
 3. Identify specific dishes or menu items that are must-tries
 4. Consider the traveler's vibes — a "romance" trip needs different dining than a "nightlife" trip
 
+Structured tagging rules (factual/verified only):
+- vibe_tags: zero or more of adventure, culture, food, nightlife, relaxation, nature, shopping, history, romance, wellness
+- constraint_tags: zero or more of crowded_spots, heights, boats, kid_unfriendly, group_unfriendly (other allowed constraint tags only when genuinely applicable)
+- dietary_tags: only diets the restaurant is verified to accommodate: vegetarian, vegan, halal, kosher, gluten_free, dairy_free, nut_allergy, shellfish_allergy
+- Use [] when unknown. An unverified dietary claim must remain absent; never infer tags from your own reasoning prose.
+
 You MUST respond with valid JSON in exactly this format, with no other text before or after. cost_min and cost_max are plain numbers in US dollars per person for a meal:
 {{
   "recommendations": [
@@ -51,13 +57,20 @@ You MUST respond with valid JSON in exactly this format, with no other text befo
       "review_count": 2300,
       "location": "Neighborhood, City",
       "image_search_query": "Restaurant Name City food",
+      "vibe_tags": ["food", "culture"],
+      "constraint_tags": [],
+      "dietary_tags": ["vegetarian"],
       "metadata": {{
         "cuisine_type": "specific cuisine style",
         "meal_type": "breakfast | lunch | dinner | snack | all-day",
         "must_try_dish": "specific dish name",
         "vibe": "romantic | casual | lively | intimate | street-side | etc.",
         "reservation_needed": true,
-        "dietary_friendly": ["vegetarian options", "halal", "gluten-free", ...]
+        "dietary_friendly": ["plain-language verified notes"],
+        "food_adventurousness": "low | moderate | high",
+        "social_level": "low | moderate | high",
+        "locality_level": "low | moderate | high",
+        "serves_food": true
       }}
     }}
   ]

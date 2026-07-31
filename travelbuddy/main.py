@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import time
 
+from datetime import date, timedelta
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -22,12 +22,21 @@ import profiles
 from config import ALLOWED_ORIGINS, LOG_LEVEL
 from itinerary import generate_itinerary
 from orchestrator import generate_context_brief, run_agents_streaming
+from personalization import (
+    MAX_TAG_BATCH_DELTA,
+    apply_weight_adjustments,
+    learn_from_rating,
+    learn_from_selections,
+)
 from schemas import (
     AgentResult,
     CharacterProfileUpdate,
     ChatInput,
+    IntakeAnswerInput,
     Itinerary,
     LoginInput,
+    PostTripFeedbackInput,
+    PostTripState,
     RecommendationFeedbackInput,
     Recommendation,
     RegisterInput,
@@ -36,14 +45,17 @@ from schemas import (
     TripState,
 )
 from store import (
+    ResearchAlreadyRunning,
     add_agent_result,
     add_research_error,
     create_trip,
     finish_research,
     get_all_recommendations,
     get_trip,
+    list_user_trips,
     set_context_brief,
     set_itinerary,
+    set_post_trip,
     set_selections,
     start_research,
 )
@@ -118,6 +130,46 @@ def _get_owned_trip(trip_id: str, user_id: str) -> TripState:
     return state
 
 
+def _selected_recommendations(state: TripState) -> list[Recommendation]:
+    selected_ids = set(state.selections or [])
+    if not selected_ids or not state.research_results:
+        return []
+    return [
+        recommendation
+        for result in state.research_results
+        for recommendation in result.recommendations
+        if recommendation.id in selected_ids
+    ]
+
+
+def _adjustment_rows(before: dict, after: dict, deltas: dict[str, float]) -> list[dict]:
+    before_vibes = before.get("vibe_weights", {})
+    after_vibes = after.get("vibe_weights", {})
+    return [
+        {
+            "key": key,
+            "before": round(float(before_vibes.get(key, 0.0)), 4),
+            "after": round(float(after_vibes.get(key, 0.0)), 4),
+            "delta": round(float(after_vibes.get(key, 0.0)) - float(before_vibes.get(key, 0.0)), 4),
+        }
+        for key in deltas
+    ]
+
+
+def _post_trip_state(state: TripState, user_id: str) -> PostTripState:
+    """Derive rating eligibility and saved feedback from server-side state."""
+    feedback = db.get_trip_feedback(state.trip_id, user_id)
+    eligible = state.itinerary is not None and state.preferences.end_date < date.today()
+    details = feedback.get("details", {}) if feedback else {}
+    return PostTripState(
+        eligible=eligible or feedback is not None,
+        eligibleAt=(state.preferences.end_date + timedelta(days=1)).isoformat(),
+        rating=feedback.get("rating") if feedback else None,
+        submittedAt=feedback.get("created_at") if feedback else None,
+        adjustments=details.get("adjustments", []) if isinstance(details, dict) else [],
+    )
+
+
 # --- Auth endpoints ---
 
 @app.get("/api/health")
@@ -178,6 +230,41 @@ async def get_profile(user_id: str = Depends(auth.get_current_user)) -> dict:
     }
 
 
+@app.get("/api/profile/intake")
+async def get_profile_intake(user_id: str = Depends(auth.get_current_user)) -> dict:
+    """Return the durable nine-question onboarding draft and next question."""
+    return profiles.get_intake_state(user_id)
+
+
+@app.put("/api/profile/intake/answers/{question_id}")
+async def save_profile_intake_answer(
+    question_id: str,
+    body: IntakeAnswerInput,
+    user_id: str = Depends(auth.get_current_user),
+) -> dict:
+    """Validate and persist one onboarding answer."""
+    try:
+        return profiles.save_intake_answer(user_id, question_id, body.value)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/profile/intake/complete")
+async def complete_profile_intake(user_id: str = Depends(auth.get_current_user)) -> dict:
+    """Generate character.md and compile the ranker's structured weights."""
+    try:
+        return await profiles.complete_intake(user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.delete("/api/profile/intake")
+async def delete_profile_intake(user_id: str = Depends(auth.get_current_user)) -> dict:
+    """Clear the saved draft/profile so the questionnaire can be retaken."""
+    profiles.reset_intake(user_id)
+    return {"status": "reset", "intake_complete": False}
+
+
 @app.get("/api/profile/character")
 async def get_character_profile(user_id: str = Depends(auth.get_current_user)) -> dict:
     """Stable typed contract for the persistent travel personality profile."""
@@ -195,7 +282,21 @@ async def update_character_profile(
     """Edit the profile summary and structured traits."""
     if profiles.load_sketch(user_id) is None:
         raise HTTPException(status_code=404, detail="Character profile not created yet")
-    return profiles.update_character_profile(user_id, body.summary, body.traits)
+    try:
+        return profiles.update_character_profile(
+            user_id,
+            body.summary,
+            weights=body.weights,
+            traits=body.traits,
+            expected_version=body.expected_version,
+        )
+    except db.ProfileVersionConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Your profile changed elsewhere. Refresh it before saving again.",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.post("/api/profile/character/reset")
@@ -213,9 +314,30 @@ async def character_feedback(
     """Record a like/dislike signal for the next recommendation ranking run."""
     if profiles.load_sketch(user_id) is None:
         raise HTTPException(status_code=404, detail="Character profile not created yet")
-    return profiles.apply_recommendation_feedback(
-        user_id, body.recommendation_name, body.category, body.sentiment
+    state = _get_owned_trip(body.trip_id, user_id)
+    recommendation = next(
+        (item for item in get_all_recommendations(state.trip_id) if item.id == body.recommendation_id),
+        None,
     )
+    if recommendation is None:
+        raise HTTPException(status_code=404, detail="Recommendation not found for this trip")
+    weights = profiles.get_taste(user_id) or {}
+    positive = learn_from_selections(weights, [recommendation])
+    deltas = positive if body.sentiment == "like" else {key: -value for key, value in positive.items()}
+    if deltas:
+        db.apply_preference_learning(
+            user_id,
+            state.trip_id,
+            f"explicit_{body.sentiment}",
+            f"feedback:{state.trip_id}:{recommendation.id}:{body.sentiment}:v1",
+            deltas,
+            payload={
+                "recommendation_id": recommendation.id,
+                "category": recommendation.category,
+                "signal_value": 1 if body.sentiment == "like" else -1,
+            },
+        )
+    return profiles.get_character_profile(user_id) or {}
 
 
 # --- Trip endpoints ---
@@ -259,12 +381,11 @@ async def research_trip(
     does not have to wait for all 4 to complete.
     """
     state = _get_owned_trip(trip_id, user_id)
-
-    if state.research_in_progress:
-        raise HTTPException(status_code=409, detail="Research is already running for this trip")
-
-    # wipes old results so a re-run doesn't duplicate them
-    start_research(trip_id)
+    try:
+        # Atomically acquires a renewable-enough lease and clears stale output.
+        research_lease_id = start_research(trip_id)
+    except ResearchAlreadyRunning as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     # taste profile: prose goes into the brief (light aim for the web
     # search), taste vectors go into the ranker (the heavy lifting)
@@ -292,7 +413,7 @@ async def research_trip(
             context_brief = await generate_context_brief(
                 state.preferences, brief_sketch, cotraveller_sketches
             )
-            set_context_brief(trip_id, context_brief)
+            set_context_brief(trip_id, context_brief, research_lease_id)
 
             yield _sse({"event": "context_brief_generated", "brief": context_brief})
 
@@ -305,9 +426,9 @@ async def research_trip(
                         agent_name=event["agent"],
                         recommendations=[Recommendation(**r) for r in event["results"]],
                     )
-                    add_agent_result(trip_id, agent_result)
+                    add_agent_result(trip_id, agent_result, research_lease_id)
                 elif event["event"] == "agent_failed":
-                    add_research_error(trip_id, event["error"])
+                    add_research_error(trip_id, event["error"], research_lease_id)
                 elif event["event"] == "all_complete":
                     event["trip_id"] = trip_id  # orchestrator already sends this one
 
@@ -330,7 +451,7 @@ async def research_trip(
                 ),
             ))
         finally:
-            finish_research(trip_id)
+            finish_research(trip_id, research_lease_id)
 
     return StreamingResponse(
         event_stream(),
@@ -411,13 +532,6 @@ async def generate_trip_itinerary(
                 "event": "itinerary_complete",
                 "itinerary": itinerary.model_dump(mode="json"),
             })
-
-            # learn from this trip in the background: what they picked vs skipped
-            picked = [r.name for r in selected]
-            skipped = [r.name for r in all_recs if r.id not in selected_ids]
-            asyncio.create_task(
-                profiles.update_sketch_from_trip(user_id, state.preferences, picked, skipped)
-            )
         except Exception as exc:
             logger.error(
                 "[%s] Itinerary generation failed: %s",
@@ -446,6 +560,92 @@ async def generate_trip_itinerary(
     )
 
 
+@app.get("/api/trips/pending-check-in")
+async def pending_trip_check_in(user_id: str = Depends(auth.get_current_user)) -> dict:
+    """Return the newest finished, unrated trip that is ready for feedback."""
+    for state in list_user_trips(user_id):
+        post_trip = _post_trip_state(state, user_id)
+        if post_trip.eligible and post_trip.rating is None:
+            return {
+                "trip": {
+                    "trip_id": state.trip_id,
+                    "destination": state.preferences.destination,
+                    "end_date": state.preferences.end_date.isoformat(),
+                    "trip_title": (
+                        state.itinerary.trip_title
+                        if state.itinerary is not None
+                        else f"{state.preferences.destination} trip"
+                    ),
+                }
+            }
+    return {"trip": None}
+
+
+@app.put("/api/trip/{trip_id}/post-trip-feedback")
+async def save_post_trip_feedback(
+    trip_id: str,
+    body: PostTripFeedbackInput,
+    user_id: str = Depends(auth.get_current_user),
+) -> dict:
+    """Save one replay-safe 1–5 rating and gently tune selected vibe weights."""
+    state = _get_owned_trip(trip_id, user_id)
+    post_trip = _post_trip_state(state, user_id)
+    if not post_trip.eligible:
+        raise HTTPException(status_code=409, detail="This trip is not ready for a post-trip check-in")
+
+    selected = _selected_recommendations(state)
+    before = profiles.get_taste(user_id) or {}
+    selection_deltas = learn_from_selections(before, selected)
+    rating_deltas = learn_from_rating(before, selected, body.overall_rating)
+    deltas = {
+        key: max(
+            -MAX_TAG_BATCH_DELTA,
+            min(MAX_TAG_BATCH_DELTA, selection_deltas.get(key, 0.0) + rating_deltas.get(key, 0.0)),
+        )
+        for key in set(selection_deltas) | set(rating_deltas)
+    }
+    projected = apply_weight_adjustments(before, deltas)
+    adjustments = _adjustment_rows(before, projected, deltas)
+    try:
+        result = db.apply_preference_learning(
+            user_id,
+            trip_id,
+            "post_trip_rating",
+            f"post-trip:{trip_id}:v1",
+            deltas,
+            rating=body.overall_rating,
+            payload={
+                "adjustments": adjustments,
+                "recommendation_ids": [item.id for item in selected],
+                "selection_deltas": selection_deltas,
+                "rating_deltas": rating_deltas,
+            },
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    feedback = result.get("feedback") or db.get_trip_feedback(trip_id, user_id) or {}
+    persisted_weights = (result.get("profile") or {}).get("weights") or projected
+    feedback_details = feedback.get("details") if isinstance(feedback, dict) else None
+    persisted_adjustments = (
+        feedback_details.get("adjustments", [])
+        if isinstance(feedback_details, dict) and "adjustments" in feedback_details
+        else _adjustment_rows(before, persisted_weights, deltas)
+    )
+    state.post_trip = PostTripState(
+        eligible=True,
+        eligibleAt=(state.preferences.end_date + timedelta(days=1)).isoformat(),
+        rating=feedback.get("rating", body.overall_rating),
+        submittedAt=feedback.get("created_at"),
+        adjustments=persisted_adjustments,
+    )
+    set_post_trip(trip_id, state.post_trip.model_dump(mode="json", by_alias=False))
+    return {
+        "postTrip": state.post_trip.model_dump(mode="json", by_alias=True),
+        "profile": profiles.get_character_profile(user_id),
+    }
+
+
 @app.get("/api/trip/{trip_id}", response_model=TripState)
 async def get_trip_state(trip_id: str, user_id: str = Depends(auth.get_current_user)) -> TripState:
     """Return the full current state of a trip.
@@ -453,7 +653,9 @@ async def get_trip_state(trip_id: str, user_id: str = Depends(auth.get_current_u
     Includes preferences, research results, selections, and itinerary —
     whatever has been generated so far.
     """
-    return _get_owned_trip(trip_id, user_id)
+    state = _get_owned_trip(trip_id, user_id)
+    state.post_trip = _post_trip_state(state, user_id)
+    return state
 
 
 # serve the frontend, mounted last so /api routes win

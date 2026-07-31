@@ -34,54 +34,49 @@ def make_rec(**overrides):
 
 
 def test_weighted_like_matching():
-    # same likes, but the rec only mentions one of them -
-    # matching the heavy like should score higher than matching the light one
-    rec = make_rec(description="A serene hilltop shrine with a beautiful garden.")
-    heavy_match = {"likes": {"temples": 3, "nightlife": 1}}
-    light_match = {"likes": {"temples": 1, "nightlife": 3}}
+    rec = make_rec(vibe_tags=["culture"])
+    heavy_match = {"vibe_weights": {"culture": .8, "nightlife": .2}}
+    light_match = {"vibe_weights": {"culture": .2, "nightlife": .8}}
     heavy_score, _, _ = taste_score(rec, heavy_match)
     light_score, _, _ = taste_score(rec, light_match)
     assert heavy_score > light_score
 
 
-def test_synonym_expansion_matches_shrine_for_temples():
-    rec = make_rec(category="activity", description="Visit the ancient shrine at dawn.")
-    score, matched, _ = taste_score(rec, {"likes": {"temples": 2}})
-    assert "temples" in matched
-    assert score == 1.0
+def test_generated_prose_is_not_a_scoring_signal():
+    rec = make_rec(category="activity", description="Culture culture culture", vibe_tags=[])
+    score, matched, _ = taste_score(rec, {"vibe_weights": {"culture": 1.0}})
+    assert matched == []
+    assert score == 0.5
 
 
-def test_soft_dislike_subtracts_from_score():
-    rec = make_rec(description="A crowded but charming food market.")
-    clean = {"likes": {"street food": 2}}
-    with_dislike = {"likes": {"street food": 2}, "dislikes": {"crowds": 2}}
-    clean_score, _, _ = taste_score(rec, clean)
-    penalized_score, _, violated = taste_score(rec, with_dislike)
-    assert penalized_score < clean_score
-    assert "crowds" in violated
+def test_legacy_fuzzy_dislike_does_not_score_generated_prose():
+    rec = make_rec(description="A crowded but charming food market.", vibe_tags=["food"])
+    clean = {"vibe_weights": {"food": 1.0}}
+    with_dislike = {"vibe_weights": {"food": 1.0}, "dislikes": {"crowds": 2}}
+    assert taste_score(rec, clean)[0] == taste_score(rec, with_dislike)[0]
 
 
 def test_strength_three_dislike_is_a_dealbreaker():
-    rec = make_rec(description="Very touristy spot, always packed with queues.")
-    taste = {"dislikes": {"crowds": 3}}
+    rec = make_rec(constraint_tags=["crowded_spots"])
+    taste = {"dealbreakers": ["crowded_spots"]}
     dealbreakers = find_dealbreakers(rec, taste)
-    assert "dislikes: crowds" in dealbreakers
+    assert "constraint: crowded_spots" in dealbreakers
 
 
 def test_vegetarian_vs_steakhouse_is_a_dealbreaker():
-    rec = make_rec(name="Famous Steakhouse", description="The best aged beef in town.")
-    taste = {"diet": ["vegetarian"]}
+    rec = make_rec(name="Famous Steakhouse", dietary_conflicts=["vegetarian"])
+    taste = {"dietary_requirements": ["vegetarian"]}
     dealbreakers = find_dealbreakers(rec, taste)
-    assert "not vegetarian-friendly" in dealbreakers
+    assert "dietary conflict: vegetarian" in dealbreakers
 
 
 def test_dietary_friendly_metadata_clears_the_dealbreaker():
     rec = make_rec(
         name="Famous Steakhouse",
         description="The best aged beef in town.",
-        metadata={"dietary_friendly": ["vegetarian options"]},
+        dietary_tags=["vegetarian"],
     )
-    taste = {"diet": ["vegetarian"]}
+    taste = {"dietary_requirements": ["vegetarian"]}
     assert find_dealbreakers(rec, taste) == []
 
 
@@ -96,18 +91,18 @@ def test_hotels_never_get_diet_dealbreakers():
 def test_group_least_misery_cotraveller_veto():
     # user loves nightlife, cotraveller hard-vetoes it
     rec = make_rec(category="activity", name="Golden Gai Bar Crawl",
-                   description="Hop between tiny bars all night.")
-    user = {"likes": {"nightlife": 3}}
-    cotraveller = {"dislikes": {"nightlife": 3}}
+                   vibe_tags=["nightlife"], constraint_tags=["crowded_spots"])
+    user = {"vibe_weights": {"nightlife": 1.0}}
+    cotraveller = {"dealbreakers": ["crowded_spots"]}
     result = group_score(rec, user, [cotraveller])
     assert "nightlife" in result["matched"]
-    assert "co-traveller: dislikes: nightlife" in result["conflicts"]
+    assert "co-traveller: constraint: crowded_spots" in result["conflicts"]
 
 
 def test_group_score_blends_user_and_cotravellers():
-    rec = make_rec(category="activity", description="A peaceful temple garden walk.")
-    user = {"likes": {"temples": 2}}          # full match -> 1.0
-    cotraveller = {"likes": {"nightlife": 2}}  # no match -> 0.0
+    rec = make_rec(category="activity", vibe_tags=["culture"])
+    user = {"vibe_weights": {"culture": 1.0}}
+    cotraveller = {"vibe_weights": {"nightlife": 1.0}}
     result = group_score(rec, user, [cotraveller])
     # 0.6 * 1.0 + 0.4 * 0.0 = 0.6
     assert abs(result["score"] - 0.6) < 1e-9
@@ -140,7 +135,7 @@ def test_editable_traits_change_recommendation_fit():
         category="activity",
         name="Quiet Neighborhood Backroads",
         description="A local, authentic garden walk through a residential neighborhood.",
-        metadata={"physical_intensity": "moderate", "booking_required": False},
+        metadata={"physical_intensity": "moderate", "booking_required": False, "locality_level": "high"},
     )
     local_taste = {"traits": {"localVsTourist": 0.95, "spontaneity": 0.9}}
     iconic_taste = {"traits": {"localVsTourist": 0.05, "spontaneity": 0.1}}

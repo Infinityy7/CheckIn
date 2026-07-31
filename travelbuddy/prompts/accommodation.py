@@ -30,6 +30,12 @@ Research and recommend exactly 8 accommodation candidates (our system will rank 
 3. Check recent reviews and ratings
 4. Assess value for money against their budget
 
+Structured tagging rules (these are verified data, not marketing copy):
+- vibe_tags: zero or more of adventure, culture, food, nightlife, relaxation, nature, shopping, history, romance, wellness
+- constraint_tags: zero or more of early_flights, theme_parks, long_bus_rides, crowded_spots, heights, boats, kid_unfriendly, group_unfriendly
+- dietary_tags: use [] for accommodation unless a food component was specifically verified
+- Use [] when unknown. Never infer a tag merely because the reasoning says it fits.
+
 You MUST respond with valid JSON in exactly this format, with no other text before or after. cost_min and cost_max are plain numbers in US dollars per night:
 {{
   "recommendations": [
@@ -45,11 +51,17 @@ You MUST respond with valid JSON in exactly this format, with no other text befo
       "review_count": 850,
       "location": "Neighborhood Name, City",
       "image_search_query": "Property Name City exterior",
+      "vibe_tags": ["relaxation", "romance"],
+      "constraint_tags": [],
+      "dietary_tags": [],
       "metadata": {{
         "property_type": "boutique hotel | hostel | apartment | resort | etc.",
         "amenities": ["wifi", "pool", "breakfast included", ...],
         "walkability_score": "high | medium | low",
-        "best_for": "what makes this stand out"
+        "best_for": "what makes this stand out",
+        "comfort_level": "low | moderate | high",
+        "social_level": "low | moderate | high",
+        "locality_level": "low | moderate | high"
       }}
     }}
   ]

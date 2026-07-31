@@ -41,6 +41,12 @@ For each recommendation:
 3. Consider the group type and size for cost-effectiveness
 4. Include specific actionable tips (which app to download, which card to buy, where to buy it)
 
+Structured tagging rules (factual/verified only):
+- vibe_tags: zero or more of adventure, culture, food, nightlife, relaxation, nature, shopping, history, romance, wellness
+- constraint_tags: zero or more of early_flights, theme_parks, long_bus_rides, crowded_spots, heights, boats, kid_unfriendly, group_unfriendly
+- dietary_tags: [] for transport
+- Use [] when unknown. Never infer a tag merely because the reasoning says it fits.
+
 You MUST respond with valid JSON in exactly this format, with no other text before or after. cost_min and cost_max are plain numbers in US dollars covering the whole strategy for the trip:
 {{
   "recommendations": [
@@ -56,6 +62,9 @@ You MUST respond with valid JSON in exactly this format, with no other text befo
       "review_count": 500,
       "location": "Origin to Destination / relevant areas",
       "image_search_query": "City Name public transport metro",
+      "vibe_tags": ["relaxation"],
+      "constraint_tags": [],
+      "dietary_tags": [],
       "metadata": {{
         "getting_there": "best mode from origin to destination with price and duration",
         "arrival_transfer": "how to get from airport/station to accommodation area",
@@ -64,7 +73,9 @@ You MUST respond with valid JSON in exactly this format, with no other text befo
         "passes_or_cards": "specific pass/card name and where to buy it",
         "estimated_daily_cost": "$X per person per day",
         "best_for": "what travel style this strategy suits",
-        "watch_out": "one key thing to be aware of"
+        "watch_out": "one key thing to be aware of",
+        "comfort_level": "low | moderate | high",
+        "social_level": "low | moderate | high"
       }}
     }}
   ]

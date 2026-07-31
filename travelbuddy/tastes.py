@@ -1,5 +1,8 @@
-"""Taste vector scoring engine - matches recs against what people actually like."""
+"""Structured profile scoring and hard-constraint checks."""
 
+import math
+
+from personalization import PROFILE_VIBES
 from schemas import Recommendation
 
 # travel concepts -> extra words that mean roughly the same thing.
@@ -97,9 +100,11 @@ def any_term_matches(term, text):
     return False
 
 
-def _observed_trait(rec, positive_terms, negative_terms, metadata_value=None):
-    """Infer a 0..1 trait direction from structured metadata and user-facing copy."""
+def _observed_trait(metadata_value=None):
+    """Normalize an explicitly structured metadata trait to 0..1."""
     if metadata_value is not None:
+        if isinstance(metadata_value, (int, float)):
+            return max(0.0, min(1.0, float(metadata_value)))
         low = str(metadata_value).lower()
         if low in {"high", "lively", "social", "luxury"}:
             return 0.9
@@ -107,58 +112,38 @@ def _observed_trait(rec, positive_terms, negative_terms, metadata_value=None):
             return 0.55
         if low in {"low", "quiet", "intimate", "private"}:
             return 0.15
-    text = searchable_text(rec)
-    positive = any(term in text for term in positive_terms)
-    negative = any(term in text for term in negative_terms)
-    if positive and not negative:
-        return 0.9
-    if negative and not positive:
-        return 0.1
-    return 0.5
+    return None
 
 
 def trait_score(rec, taste):
-    """Score recommendation metadata/copy against the editable UI trait model."""
+    """Score explicitly structured recommendation metadata against UI traits."""
     traits = (taste or {}).get("traits")
     if not isinstance(traits, dict) or not traits:
         return (0.5, [])
 
+    booking_known = any(
+        key in rec.metadata for key in ("booking_required", "reservation_needed")
+    )
     observations = {
-        "adventureLevel": _observed_trait(
-            rec, ["adventure", "hike", "thrill", "backroad", "unusual"],
-            ["gentle", "easy", "relaxed"], rec.metadata.get("physical_intensity")
+        "adventureLevel": _observed_trait(rec.metadata.get("adventure_level", rec.metadata.get("physical_intensity"))),
+        "socialPreference": _observed_trait(rec.metadata.get("social_level")),
+        "comfortPreference": _observed_trait(rec.metadata.get("comfort_level")),
+        "spontaneity": (
+            0.15 if rec.metadata.get("booking_required") is True or rec.metadata.get("reservation_needed") is True
+            else 0.75 if booking_known else None
         ),
-        "socialPreference": _observed_trait(
-            rec, ["lively", "social", "communal", "group", "nightlife"],
-            ["quiet", "private", "intimate", "secluded"], rec.metadata.get("vibe")
-        ),
-        "comfortPreference": _observed_trait(
-            rec, ["luxury", "premium", "comfortable", "private transfer", "boutique"],
-            ["hostel", "rugged", "basic", "shared room"]
-        ),
-        "spontaneity": 0.15 if rec.metadata.get("booking_required") is True or rec.metadata.get("reservation_needed") is True else 0.75,
-        "localVsTourist": _observed_trait(
-            rec, ["local", "neighborhood", "authentic", "insider", "market", "family-run"],
-            ["touristy", "tourist", "iconic landmark", "must-see crowds"]
-        ),
-        "nightlifeInterest": _observed_trait(
-            rec, ["night", "bar", "club", "evening", "lively"],
-            ["early morning", "dawn", "quiet evening"]
-        ),
-        "natureVsUrban": _observed_trait(
-            rec, ["nature", "forest", "trail", "garden", "mountain", "coast"],
-            ["downtown", "city center", "urban", "shopping district"]
-        ),
+        "localVsTourist": _observed_trait(rec.metadata.get("locality_level")),
+        "nightlifeInterest": _observed_trait(rec.metadata.get("nightlife_level")),
+        "natureVsUrban": _observed_trait(rec.metadata.get("nature_level")),
     }
     if rec.category == "restaurant":
-        observations["foodAdventurousness"] = _observed_trait(
-            rec, ["street food", "tasting", "unusual", "regional", "chef's counter"],
-            ["familiar", "international chain", "classic comfort"]
-        )
+        observations["foodAdventurousness"] = _observed_trait(rec.metadata.get("food_adventurousness"))
 
     fits = []
     matched = []
     for key, observed in observations.items():
+        if observed is None:
+            continue
         value = traits.get(key)
         if not isinstance(value, (int, float)):
             continue
@@ -177,24 +162,26 @@ def taste_score(rec, taste):
         # nothing to go on, everyone gets a shrug
         return (0.5, [], [])
 
-    text = searchable_text(rec)
     matched = []
     violated = []
 
-    likes = taste.get("likes") or {}
-    earned = 0
-    total_weight = 0
-    for like in likes:
-        weight = likes[like]
-        total_weight += weight
-        if any_term_matches(like, text):
-            matched.append(like)
-            earned += weight
-
-    if total_weight > 0:
-        affinity = earned / total_weight
+    vibe_weights = taste.get("vibe_weights") if isinstance(taste.get("vibe_weights"), dict) else None
+    if vibe_weights is None:
+        # Migration compatibility: only controlled vibe names survive. We never
+        # search generated names/descriptions/reasoning for profile keywords.
+        likes = taste.get("likes") or {}
+        vibe_weights = {
+            vibe: max(0.0, float(likes.get(vibe, 0.0))) for vibe in PROFILE_VIBES
+        }
+    rec_tags = [tag for tag in rec.vibe_tags if tag in PROFILE_VIBES]
+    if rec_tags and sum(vibe_weights.values()) > 0:
+        item_value = 1.0 / len(rec_tags)
+        dot = sum(float(vibe_weights.get(tag, 0.0)) * item_value for tag in rec_tags)
+        profile_norm = math.sqrt(sum(float(vibe_weights.get(vibe, 0.0)) ** 2 for vibe in PROFILE_VIBES))
+        item_norm = math.sqrt(len(rec_tags) * item_value ** 2)
+        affinity = dot / (profile_norm * item_norm) if profile_norm and item_norm else 0.5
+        matched.extend(tag for tag in rec_tags if float(vibe_weights.get(tag, 0.0)) > 0)
     else:
-        # no likes on file, stay neutral
         affinity = 0.5
 
     score = affinity
@@ -205,14 +192,8 @@ def taste_score(rec, taste):
 
     # soft dislikes chip away at the score; strength-3 ones are
     # handled as dealbreakers elsewhere, not here
-    dislikes = taste.get("dislikes") or {}
-    for dislike in dislikes:
-        weight = dislikes[dislike]
-        if weight >= 3:
-            continue
-        if any_term_matches(dislike, text):
-            violated.append(dislike)
-            score -= (weight / 3) * 0.15
+    # New profiles model no-gos as hard controlled constraints. Legacy fuzzy
+    # dislikes are retained in storage but are not scored from generated prose.
 
     # pace mismatch: slow traveller + intense activity is a bad time
     pace = taste.get("pace")
@@ -233,40 +214,31 @@ def taste_score(rec, taste):
 
 
 def find_dealbreakers(rec, taste):
-    """Hard vetoes: strength-3 dislikes and diet conflicts."""
+    """Hard vetoes from controlled candidate fields only."""
     if not taste:
         return []
 
-    text = searchable_text(rec)
     dealbreakers = []
+    candidate_constraints = set(rec.constraint_tags) | set(rec.dealbreaker_tags)
+    for constraint in taste.get("dealbreakers") or []:
+        if constraint in candidate_constraints:
+            dealbreakers.append("constraint: " + constraint)
 
-    dislikes = taste.get("dislikes") or {}
-    for dislike in dislikes:
-        if dislikes[dislike] >= 3 and any_term_matches(dislike, text):
-            dealbreakers.append("dislikes: " + dislike)
+    if taste.get("default_party") == "family_young_kids" and "kid_unfriendly" in candidate_constraints:
+        dealbreakers.append("constraint: kid_unfriendly")
+    if taste.get("default_party") == "multi_generation" and "group_unfriendly" in candidate_constraints:
+        dealbreakers.append("constraint: group_unfriendly")
 
-    # only food-ish categories can conflict with a diet;
-    # a hotel isn't going to force-feed anyone steak
-    if rec.category in ("restaurant", "activity"):
-        for diet in taste.get("diet") or []:
-            rules = DIET_RULES.get(diet.lower())
-            if rules is None:
-                continue
+    requirements = set(taste.get("dietary_requirements") or taste.get("diet") or [])
+    supported = set(rec.dietary_tags) | set(rec.dietary_accommodations)
+    explicit_conflicts = requirements & set(rec.dietary_conflicts)
+    for diet in sorted(explicit_conflicts):
+        dealbreakers.append("dietary conflict: " + diet)
 
-            # if the rec explicitly says it caters to this diet, it's cleared
-            friendly_tags = rec.metadata.get("dietary_friendly")
-            cleared = False
-            if isinstance(friendly_tags, list):
-                for tag in friendly_tags:
-                    if diet.lower() in str(tag).lower():
-                        cleared = True
-            if cleared:
-                continue
-
-            for conflict in rules["conflicts"]:
-                if term_matches(conflict, text):
-                    dealbreakers.append("not " + diet + "-friendly")
-                    break
+    serves_food = rec.category == "restaurant" or rec.metadata.get("serves_food") is True
+    if serves_food:
+        for diet in sorted(requirements - supported - explicit_conflicts):
+            dealbreakers.append("dietary compatibility unverified: " + diet)
 
     return dealbreakers
 
@@ -310,6 +282,10 @@ def profile_confidence(taste):
     """How much do we actually know about this person? 0..1."""
     if not taste:
         return 0.0
+    if isinstance(taste.get("vibe_weights"), dict):
+        # A completed nine-question profile is a strong prior, but still leaves
+        # room for verified rating/review quality in the ranker.
+        return 0.75
     likes = taste.get("likes") or {}
     dislikes = taste.get("dislikes") or {}
     traits = taste.get("traits") if isinstance(taste.get("traits"), dict) else {}

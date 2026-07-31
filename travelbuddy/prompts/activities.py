@@ -36,6 +36,12 @@ For each recommendation:
 3. Consider how they match the traveler's stated vibes and interests
 4. Note practical details like duration, booking requirements, and best time to visit
 
+Structured tagging rules (factual/verified only):
+- vibe_tags: zero or more of adventure, culture, food, nightlife, relaxation, nature, shopping, history, romance, wellness
+- constraint_tags: zero or more of early_flights, theme_parks, long_bus_rides, crowded_spots, heights, boats, kid_unfriendly, group_unfriendly
+- dietary_tags: verified accommodated diets only (vegetarian, vegan, halal, kosher, gluten_free, dairy_free, nut_allergy, shellfish_allergy); otherwise []
+- Use [] when unknown. Never derive tags from your own reasoning prose.
+
 You MUST respond with valid JSON in exactly this format, with no other text before or after. cost_min and cost_max are plain numbers in US dollars per person:
 {{
   "recommendations": [
@@ -51,12 +57,20 @@ You MUST respond with valid JSON in exactly this format, with no other text befo
       "review_count": 1200,
       "location": "Area/Neighborhood, City",
       "image_search_query": "Activity Name City",
+      "vibe_tags": ["culture", "history"],
+      "constraint_tags": [],
+      "dietary_tags": [],
       "metadata": {{
         "duration": "estimated time needed",
         "best_time": "morning | afternoon | evening | all day",
         "booking_required": true,
         "physical_intensity": "low | moderate | high",
-        "insider_tip": "one practical tip for getting the most out of this"
+        "insider_tip": "one practical tip for getting the most out of this",
+        "adventure_level": "low | moderate | high",
+        "social_level": "low | moderate | high",
+        "locality_level": "low | moderate | high",
+        "nature_level": "low | moderate | high",
+        "serves_food": false
       }}
     }}
   ]

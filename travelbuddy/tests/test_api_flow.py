@@ -31,6 +31,7 @@ def recommendation(category: str, rank: int) -> Recommendation:
         review_count=800,
         location="Central Kyoto",
         image_search_query=f"kyoto {category}",
+        vibe_tags=["culture"],
         rank=rank,
         score=0.95 - rank * 0.05,
     )
@@ -40,7 +41,6 @@ def test_authenticated_profile_research_selection_and_itinerary(tmp_path, monkey
     db.DB_PATH = tmp_path / "api.db"
     db._conn = None
     db.init_db()
-    auth._sessions = {}
 
     async def fake_brief(*_args, **_kwargs):
         return "A balanced Kyoto trip shaped by local food and unhurried exploration."
@@ -81,20 +81,16 @@ def test_authenticated_profile_research_selection_and_itinerary(tmp_path, monkey
     async def fake_itinerary_builder(*_args, **_kwargs):
         return fake_itinerary
 
-    async def no_profile_learning(*_args, **_kwargs):
-        return None
-
     monkeypatch.setattr(main, "generate_context_brief", fake_brief)
     monkeypatch.setattr(main, "run_agents_streaming", fake_agents)
     monkeypatch.setattr(main, "generate_itinerary", fake_itinerary_builder)
-    monkeypatch.setattr(profiles, "update_sketch_from_trip", no_profile_learning)
 
     client = TestClient(main.app)
     auth_response = client.post("/api/auth/register", json={"email": "flow@example.com", "password": "safe-password-1"})
     assert auth_response.status_code == 200
     token = auth_response.json()["token"]
     headers = {"Authorization": f"Bearer {token}"}
-    user_id = auth._sessions[token]
+    user_id = db.get_user_by_email("flow@example.com")["user_id"]
 
     profiles.save_sketch(
         user_id,
@@ -124,14 +120,6 @@ A balanced traveler who values local food and quieter cultural experiences.
     assert edited.status_code == 200
     assert edited.json()["traits"]["spontaneity"] == 0.9
 
-    feedback = client.post(
-        "/api/profile/character/feedback",
-        headers=headers,
-        json={"recommendation_name": "Crowded Bus Tour", "category": "activity", "sentiment": "dislike"},
-    )
-    assert feedback.status_code == 200
-    assert profiles.get_taste(user_id)["dislikes"]["crowded bus tour"] == 2
-
     trip = client.post("/api/trip/preferences", headers=headers, json={
         "destination": "Kyoto", "origin": "Mumbai", "start_date": "2026-10-12", "end_date": "2026-10-18",
         "budget_amount": 3200, "currency": "USD", "vibes": ["culture", "food", "nature"],
@@ -144,6 +132,19 @@ A balanced traveler who values local food and quieter cultural experiences.
 
     state = client.get(f"/api/trip/{trip_id}", headers=headers).json()
     assert len(state["research_results"]) == 4
+    feedback_item = state["research_results"][1]["recommendations"][0]
+    feedback = client.post(
+        "/api/profile/character/feedback",
+        headers=headers,
+        json={
+            "trip_id": trip_id,
+            "recommendation_id": feedback_item["id"],
+            "sentiment": "dislike",
+        },
+    )
+    assert feedback.status_code == 200
+    assert db.list_preference_events(user_id)[0]["event_type"] == "explicit_dislike"
+
     selected_ids = [result["recommendations"][0]["id"] for result in state["research_results"]]
     selected = client.post(f"/api/trip/{trip_id}/select", headers=headers, json={"selections": selected_ids})
     assert selected.json()["count"] == 4

@@ -13,10 +13,6 @@ WEIGHT_TASTE = 0.30
 WEIGHT_RATING = 0.25
 WEIGHT_VIBES = 0.15
 
-# a dealbreaker doesn't hide the rec, it slams it to the bottom
-# with the reason attached so the user can see (and override) it
-DEALBREAKER_MULTIPLIER = 0.15
-
 # ratings with few reviews get pulled toward 3.5 so a fake-looking
 # 5.0 with no reviews can't beat a solid 4.4 with thousands
 PRIOR_RATING = 3.5
@@ -43,25 +39,12 @@ def rating_score(rec: Recommendation) -> float:
 
 
 def vibe_score(rec: Recommendation, prefs: TripPreferences) -> float:
-    # how many of the trip's vibes show up in the rec's text.
-    # matching on the first 5 letters so "culture" also hits "cultural".
-    # (taste-profile matching moved to tastes.py — this is trip-level only)
+    # Trip-level override matching uses only controlled candidate tags.
     terms = list(prefs.vibes)
     if not terms:
         return 0.5
-
-    searchable = " ".join(
-        [rec.name, rec.description, rec.reasoning, str(rec.metadata)]
-    ).lower()
-
-    matched = 0
-    for term in terms:
-        stem = term.lower()
-        if len(stem) > 5:
-            stem = stem[:5]
-        if stem in searchable:
-            matched += 1
-    return matched / len(terms)
+    matched = len(set(terms) & set(rec.vibe_tags))
+    return matched / len(set(terms))
 
 
 def category_allowance(category: str, prefs: TripPreferences) -> float | None:
@@ -109,6 +92,15 @@ def budget_score(
     elif budget_style == "flexible":
         allowance *= 1.25
 
+    spend_category = {
+        "hotel": "stay", "activity": "experiences",
+        "restaurant": "food", "transport": "transport",
+    }.get(rec.category)
+    if spend_category == (user_taste or {}).get("splurge_category"):
+        allowance *= 1.5
+    elif spend_category == (user_taste or {}).get("save_category"):
+        allowance *= 0.8
+
     midpoint = (rec.cost_min + rec.cost_max) / 2
     if midpoint <= allowance:
         return 1.0
@@ -149,10 +141,6 @@ def score_recommendation(
         + WEIGHT_VIBES * vibes
     )
 
-    # any member's dealbreaker slams the score — shown, flagged, ranked last
-    if conflicts:
-        total = total * DEALBREAKER_MULTIPLIER
-
     return {
         "rating": round(rating, 3),
         "vibes": round(vibes, 3),
@@ -166,7 +154,7 @@ def score_recommendation(
 
 def _sort_key(rec: Recommendation) -> tuple:
     # best score first, ties broken by rating then review count
-    return (-rec.score, -rec.rating, -rec.review_count)
+    return (-rec.score, -rec.rating, -rec.review_count, rec.name.casefold(), rec.id)
 
 
 def rank_recommendations(
@@ -176,12 +164,16 @@ def rank_recommendations(
     cotraveller_tastes: list[dict] | None = None,
 ) -> list[Recommendation]:
     """Score everything, sort best-first, and number them (rank 1 = best)."""
+    survivors = []
     for rec in recommendations:
         breakdown = score_recommendation(rec, prefs, user_taste, cotraveller_tastes)
+        if breakdown["conflicts"]:
+            continue
         rec.score = breakdown["total"]
         rec.score_breakdown = breakdown
+        survivors.append(rec)
 
-    ordered = sorted(recommendations, key=_sort_key)
+    ordered = sorted(survivors, key=_sort_key)
 
     position = 1
     for rec in ordered:
