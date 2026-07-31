@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Compass, LogOut, Plus, Sparkles, UserRound } from 'lucide-react'
 import { api, ApiError, userErrorMessage } from './services/api'
-import type { CharacterProfile, Itinerary, Recommendation, StreamEvent, TripPreferences, TripState, User } from './types'
+import type { CharacterProfile, Itinerary, PendingCheckInTrip, Recommendation, StreamEvent, TripPreferences, TripState, User } from './types'
 import { AuthView } from './components/AuthView'
 import { Onboarding } from './components/Onboarding'
 import { TripForm } from './components/TripForm'
@@ -32,6 +32,7 @@ export default function App() {
   const [profileOpen, setProfileOpen] = useState(false)
   const [loading, setLoading] = useState(api.hasSession())
   const [error, setError] = useState('')
+  const [pendingCheckIn, setPendingCheckIn] = useState<PendingCheckInTrip | null>(null)
   const [taviVisible, setTaviVisible] = useState(() => localStorage.getItem('travelbuddy.tavi') !== 'hidden')
 
   // Session bootstrap runs exactly once; subsequent refreshes are explicit user actions.
@@ -47,6 +48,10 @@ export default function App() {
       if (me.intake_complete && lastTrip) {
         const state = await api.trip(lastTrip).catch(() => null)
         if (state) hydrateTrip(state)
+      }
+      if (me.intake_complete) {
+        const pending = await api.pendingCheckIn().catch(() => ({ trip: null }))
+        setPendingCheckIn(pending.trip)
       }
     } catch (reason) {
       if (reason instanceof ApiError && reason.status === 401) { localStorage.removeItem('travelbuddy.session'); setUser(null) }
@@ -100,15 +105,40 @@ export default function App() {
     try {
       await api.select(trip.trip_id, selections)
       await api.itinerary(trip.trip_id, (event) => {
-        if (event.event === 'itinerary_complete' && event.itinerary) { setItinerary(event.itinerary); setScreen('itinerary') }
+        if (event.event === 'itinerary_complete' && event.itinerary) { setItinerary(event.itinerary); setTrip((current) => current ? { ...current, itinerary: event.itinerary } : current); setScreen('itinerary') }
         if (event.event === 'itinerary_failed') setError(streamErrorMessage(event, 'The itinerary could not be generated.'))
       })
+      const latest = await api.trip(trip.trip_id)
+      if (latest.itinerary) hydrateTrip(latest)
     } catch (reason) { setError(userErrorMessage(reason, 'Could not assemble the itinerary.')) }
     finally { setBuilding(false) }
   }
 
   async function logout() { await api.logout(); setUser(null); setProfile(null); setTrip(null); setScreen('planner') }
-  async function retake() { await api.resetProfile(); setProfile(null); setUser((current) => current ? { ...current, intake_complete: false } : current); setProfileOpen(false) }
+  async function retake() {
+    try { await api.resetIntake() }
+    catch (reason) { if (!(reason instanceof ApiError) || reason.status !== 404) throw reason; await api.resetProfile() }
+    setProfile(null); setUser((current) => current ? { ...current, intake_complete: false } : current); setProfileOpen(false)
+  }
+
+  async function openPendingTrip() {
+    if (!pendingCheckIn) return
+    setLoading(true); setError('')
+    try {
+      const state = await api.trip(pendingCheckIn.trip_id)
+      localStorage.setItem('travelbuddy.lastTrip', state.trip_id)
+      hydrateTrip(state)
+    } catch (reason) { setError(userErrorMessage(reason, 'Could not open that trip.')) }
+    finally { setLoading(false) }
+  }
+
+  async function submitPostTripRating(rating: 1 | 2 | 3 | 4 | 5) {
+    if (!trip) return
+    const result = await api.submitPostTripFeedback(trip.trip_id, rating)
+    setProfile(result.profile)
+    setTrip((current) => current ? { ...current, postTrip: result.postTrip } : current)
+    setPendingCheckIn((current) => current?.trip_id === trip.trip_id ? null : current)
+  }
 
   if (loading && !trip) return <div className="full-state"><LoadingState /></div>
   if (!user) return <AuthView onAuthenticated={bootstrap} />
@@ -124,12 +154,13 @@ export default function App() {
   return <div className={`app-shell ${taviVisible ? '' : 'app-shell--tavi-hidden'}`}>
     <nav className="app-nav"><button className="brand-button" onClick={() => setScreen('planner')}><Brand /></button><div className="nav-route"><Compass /><span>{trip ? trip.preferences.destination : 'No active trip'}</span>{trip && <small>{screen}</small>}</div><div className="nav-actions"><Button variant="quiet" onClick={() => { setScreen('planner'); setTrip(null); localStorage.removeItem('travelbuddy.lastTrip') }}><Plus /> New trip</Button><button className="icon-button" onClick={toggleTavi} aria-label={taviVisible ? 'Minimize Tavi' : 'Show Tavi'} aria-pressed={!taviVisible}><Sparkles /></button><button className="profile-button" onClick={() => setProfileOpen(true)}><UserRound /><span>{user.email.split('@')[0]}<small>Character profile</small></span></button><button className="icon-button" onClick={logout} aria-label="Log out"><LogOut /></button></div></nav>
     {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')}>Dismiss</button></div>}
+    {screen === 'planner' && pendingCheckIn && <aside className="pending-checkin" aria-label="Trip check-in"><div><Sparkles /><p><strong>How was {pendingCheckIn.destination}?</strong><span>A quick rating helps Tavi plan the next one better.</span></p></div><Button variant="secondary" onClick={openPendingTrip}>Rate this trip</Button></aside>}
     {screen === 'planner' && <TripForm onSubmit={createTrip} busy={loading} />}
     {screen === 'workspace' && trip && <Workspace destination={trip.preferences.destination} preferences={trip.preferences} profile={profile} recommendations={recommendations} agents={agents} researching={researching} selections={selections} onToggle={(id) => setSelections((items) => items.includes(id) ? items.filter((item) => item !== id) : [...items, id])} onAlternatives={() => runResearch()} onFeedback={async (item) => {
-      try { const next = await api.feedback(item, 'dislike'); setProfile(next) }
+      try { const next = await api.feedback(trip.trip_id, item.id, 'dislike'); setProfile(next) }
       catch (reason) { setError(userErrorMessage(reason, 'Could not save that preference.')); throw reason }
     }} onBuild={buildItinerary} />}
-    {screen === 'itinerary' && itinerary && trip && <ItineraryView itinerary={itinerary} preferences={trip.preferences} onBack={() => setScreen('workspace')} />}
+    {screen === 'itinerary' && itinerary && trip && <ItineraryView itinerary={itinerary} preferences={trip.preferences} postTrip={trip.postTrip} onBack={() => setScreen('workspace')} onRate={submitPostTripRating} />}
     {building && <div className="build-overlay"><LoadingState title="Shaping your final route" detail="Balancing time, cost, geography, and your preferred pace…" /></div>}
     {!trip && screen !== 'planner' && <ErrorState message="This trip is no longer available. Start a fresh route." onRetry={() => setScreen('planner')} />}
     <ProfileDrawer key={profile.updatedAt} open={profileOpen} profile={profile} onClose={() => setProfileOpen(false)} onUpdate={setProfile} onRetake={retake} />

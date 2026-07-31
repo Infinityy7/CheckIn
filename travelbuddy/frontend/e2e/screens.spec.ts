@@ -5,9 +5,23 @@ const shots = path.resolve(process.cwd(), '../screenshots')
 const profile = {
   id: 'character:e2e', version: 1,
   summary: 'Vedant is an energetic, moderately budget-conscious traveler who prioritizes memorable experiences over luxury. He follows local food, dramatic landscapes, unusual activities, and flexible schedules, preferring a few high-impact places over a rushed checklist.',
+  characterMd: '# Character Sketch\n\nVedant follows local food, dramatic landscapes, and flexible schedules.',
+  weights: { schemaVersion: 1, vibeWeights: { food: .35, culture: .25, nature: .22, adventure: .18 }, spontaneity: .7, chronotype: 'mid', splurgeCategory: 'food', saveCategory: 'transport', archetype: 'foodie_explorer', defaultParty: 'partner', foodAdventurousness: .86, dealBreakers: ['crowded_spots'], dietaryRequirements: [] },
   traits: { pace: 'balanced', budgetStyle: 'balanced', adventureLevel: .78, socialPreference: .58, comfortPreference: .55, spontaneity: .7, localVsTourist: .82, foodAdventurousness: .86, nightlifeInterest: .42, natureVsUrban: .62 },
-  rawAnswers: ['Balanced and flexible'], createdAt: '2026-07-14T00:00:00Z', updatedAt: '2026-07-14T00:00:00Z',
+  rawAnswers: { spontaneity: .7 }, createdAt: '2026-07-14T00:00:00Z', updatedAt: '2026-07-14T00:00:00Z',
 }
+
+const questionnaire = [
+  { id: 'spontaneity', prompt: 'Your ideal trip day: every hour planned, or see where the day takes you?', type: 'slider', lowLabel: 'Planned', highLabel: 'Spontaneous' },
+  { id: 'top_vibes', prompt: 'Pick your top 3 — what makes a trip unforgettable?', type: 'multi_choice', minSelections: 3, maxSelections: 3, options: ['adventure','culture','food','nightlife','relaxation','nature','shopping','history','romance','wellness'].map((value) => ({ value, label: value })) },
+  { id: 'spend_preferences', prompt: 'You’d happily splurge on ___ but save on ___.', type: 'paired_choice', options: ['stay','experiences','food','shopping','transport'].map((value) => ({ value, label: value })) },
+  { id: 'chronotype', prompt: 'On holiday you’re up and out by…', type: 'single_choice', options: [{ value: 'early', label: '8 AM' }, { value: 'mid', label: '9:30ish' }, { value: 'late', label: 'Whenever we wake up' }] },
+  { id: 'archetype', prompt: 'Which traveler is most you?', type: 'single_choice', options: [{ value: 'foodie_explorer', label: 'Foodie Explorer' }, { value: 'culture_seeker', label: 'Culture Seeker' }] },
+  { id: 'default_party', prompt: 'Who do you usually travel with?', type: 'single_choice', options: [{ value: 'solo', label: 'Solo' }, { value: 'partner', label: 'Partner' }] },
+  { id: 'food_adventurousness', prompt: 'Food on trips: stick to what you know, or eat like a local dares you to?', type: 'slider', lowLabel: 'Familiar', highLabel: 'Anything' },
+  { id: 'constraints', prompt: 'Any absolute no-gos?', type: 'multi_choice', minSelections: 0, options: [{ value: 'early_flights', label: 'Early flights' }, { value: 'vegetarian', label: 'Vegetarian' }] },
+  { id: 'perfect_moment', prompt: 'In one line — describe your perfect travel moment.', type: 'free_text', optional: true },
+]
 
 const categories = ['hotel', 'activity', 'restaurant', 'transport'] as const
 const names = {
@@ -37,15 +51,18 @@ const itinerary = {
 }
 
 function json(route: Route, body: unknown, status = 200) { return route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) }) }
-async function session(page: Page, trip = false, final = false) {
-  const calls = { profilePuts: 0, resets: 0, feedback: 0 }
+async function session(page: Page, trip = false, final = false, eligible = false) {
+  const calls = { profilePuts: 0, resets: 0, feedback: 0, postTrip: 0 }
   await page.addInitScript(({ trip }) => { localStorage.setItem('travelbuddy.session', 'e2e-token'); if (trip) localStorage.setItem('travelbuddy.lastTrip', 'trip-e2e') }, { trip })
   await page.route('**/api/auth/me', (route) => json(route, { email: 'vedant@example.com', intake_complete: true, cotravellers: [] }))
   await page.route('**/api/profile/character/reset', (route) => { calls.resets += 1; return json(route, { status: 'reset', intake_complete: false }) })
+  await page.route('**/api/profile/intake', (route) => { if (route.request().method() === 'DELETE') calls.resets += 1; return json(route, { status: 'not_started', currentIndex: 0, total: 9, answers: {}, currentQuestion: questionnaire[0] }) })
   await page.route('**/api/profile/character/feedback', (route) => { calls.feedback += 1; return json(route, profile) })
   await page.route('**/api/profile/chat', (route) => json(route, { reply: 'Let’s remap your travel style. What pace feels best?', done: false }))
   await page.route('**/api/profile/character', (route) => { if (route.request().method() === 'PUT') calls.profilePuts += 1; return json(route, profile) })
-  if (trip) await page.route('**/api/trip/trip-e2e', (route) => json(route, { trip_id: 'trip-e2e', preferences, research_results: categories.map((category) => ({ agent_name: `${category} Agent`, recommendations: recommendations.filter((item) => item.category === category) })), selections: [], ...(final ? { itinerary } : {}) }))
+  await page.route('**/api/trips/pending-check-in', (route) => json(route, { trip: null }))
+  await page.route('**/api/trip/trip-e2e/post-trip-feedback', (route) => { calls.postTrip += 1; return json(route, { postTrip: { eligible: true, rating: 5, adjustments: [{ key: 'food', before: .35, after: .38, delta: .03 }] }, profile: { ...profile, version: 2 } }) })
+  if (trip) await page.route('**/api/trip/trip-e2e', (route) => json(route, { trip_id: 'trip-e2e', preferences, research_results: categories.map((category) => ({ agent_name: `${category} Agent`, recommendations: recommendations.filter((item) => item.category === category) })), selections: [], ...(final ? { itinerary } : {}), postTrip: { eligible } }))
   return calls
 }
 
@@ -58,18 +75,30 @@ test('landing is polished and free of console errors', async ({ page }) => {
 
 test('first-time onboarding completes and persists the generated reveal', async ({ page }) => {
   let turns = 0
+  const answers: Record<string, unknown> = {}
   await page.addInitScript(() => localStorage.setItem('travelbuddy.session', 'onboarding-token'))
   await page.route('**/api/auth/me', (route) => json(route, { email: 'new@example.com', intake_complete: false, cotravellers: [] }))
-  await page.route('**/api/profile/chat', async (route) => {
-    const body = route.request().postDataJSON() as { message: string }
-    if (body.message) turns += 1
-    return json(route, { reply: turns >= 6 ? "That's everything I needed — I've got a solid picture now." : `Question ${turns + 1}: tell me which option feels most like you?`, done: turns >= 6 })
+  await page.route('**/api/profile/intake', (route) => json(route, { questionnaireVersion: 'personalisation-v1', status: 'in_progress', currentIndex: turns, total: 9, answers, currentQuestion: questionnaire[turns] }))
+  await page.route('**/api/profile/intake/answers/*', async (route) => {
+    const id = route.request().url().split('/').pop()!
+    answers[id] = (route.request().postDataJSON() as { value: unknown }).value
+    turns += 1
+    return json(route, { questionnaireVersion: 'personalisation-v1', status: turns === 9 ? 'ready_to_complete' : 'in_progress', currentIndex: turns, total: 9, answers, currentQuestion: questionnaire[turns] ?? null })
   })
+  await page.route('**/api/profile/intake/complete', (route) => json(route, profile))
   await page.route('**/api/profile/character', (route) => json(route, profile))
-  await page.goto('/'); await expect(page.getByRole('heading', { name: /quick chat/ })).toBeVisible()
+  await page.goto('/'); await expect(page.getByRole('heading', { name: /quick quiz/ })).toBeVisible()
   await page.screenshot({ path: `${shots}/02-onboarding-desktop.png`, fullPage: true })
-  for (let i = 0; i < 6; i += 1) { await page.locator('.quick-replies button').first().click(); if (i < 5) await expect(page.getByText(`Question ${i + 2}: tell me which option feels most like you?`)).toBeVisible() }
+  await page.getByRole('button', { name: /Next question/i }).click()
+  await page.locator('.intake-options button').nth(0).click(); await page.locator('.intake-options button').nth(1).click(); await page.locator('.intake-options button').nth(2).click(); await page.getByRole('button', { name: /Next question/i }).click()
+  await page.locator('.paired-choice select').nth(0).selectOption('food'); await page.locator('.paired-choice select').nth(1).selectOption('transport'); await page.getByRole('button', { name: /Next question/i }).click()
+  for (let i = 0; i < 3; i += 1) { await page.locator('.intake-options button').first().click(); await page.getByRole('button', { name: /Next question/i }).click() }
+  await page.getByRole('button', { name: /Next question/i }).click()
+  await page.locator('.intake-options button').first().click(); await page.getByRole('button', { name: /Next question/i }).click()
+  await page.getByRole('textbox').fill('A dawn walk followed by an unforgettable local breakfast.')
+  await page.getByRole('button', { name: /Map my character/i }).click()
   await expect(page.getByRole('heading', { name: /I think I’ve got you/ })).toBeVisible()
+  expect(turns).toBe(9)
   await page.screenshot({ path: `${shots}/03-profile-reveal.png`, fullPage: true })
 })
 
@@ -84,8 +113,8 @@ test('trip creation workspace is responsive and profile editing is wired', async
   await page.getByRole('button', { name: /Character profile/i }).click(); await expect(page.getByRole('dialog')).toBeVisible()
   await page.keyboard.press('Escape'); await expect(page.getByRole('dialog')).not.toBeVisible()
   await page.getByRole('button', { name: 'Minimize Tavi' }).click(); await expect(page.locator('.app-shell')).toHaveClass(/app-shell--tavi-hidden/)
-  await page.getByRole('button', { name: /Character profile/i }).click(); await page.getByRole('button', { name: /Retake conversation/ }).click()
-  await expect(page.getByRole('heading', { name: /quick chat/ })).toBeVisible(); expect(calls.resets).toBe(1)
+  await page.getByRole('button', { name: /Character profile/i }).click(); await page.getByRole('button', { name: /Retake questionnaire/ }).click()
+  await expect(page.getByRole('heading', { name: /quick quiz/ })).toBeVisible(); expect(calls.resets).toBe(1)
 })
 
 test('ranked recommendations select and generate a final itinerary', async ({ page }) => {
@@ -112,4 +141,24 @@ test('returning user opens the saved final itinerary', async ({ page }) => {
   await session(page, true, true)
   await page.goto('/'); await expect(page.getByRole('heading', { name: itinerary.trip_title })).toBeVisible()
   await expect(page.getByText(/Built around your character profile/)).toBeVisible()
+})
+
+test('an eligible completed trip accepts one post-trip rating', async ({ page }) => {
+  const calls = await session(page, true, true, true)
+  await page.goto('/'); await expect(page.getByRole('heading', { name: /How did this trip feel/ })).toBeVisible()
+  await page.screenshot({ path: `${shots}/10-post-trip-checkin.png`, fullPage: true })
+  await page.getByRole('radio', { name: '5 out of 5' }).check()
+  await page.getByRole('button', { name: /Save my rating/ }).click()
+  await expect(page.getByText(/profile learned from this trip/i)).toBeVisible()
+  expect(calls.postTrip).toBe(1)
+})
+
+test('planner surfaces the newest pending trip without adding trip-history clutter', async ({ page }) => {
+  await session(page)
+  await page.route('**/api/trips/pending-check-in', (route) => json(route, { trip: { trip_id: 'trip-e2e', destination: 'Kyoto, Japan', end_date: '2026-10-18', trip_title: itinerary.trip_title } }))
+  await page.route('**/api/trip/trip-e2e', (route) => json(route, { trip_id: 'trip-e2e', preferences, itinerary, research_results: [], selections: [], postTrip: { eligible: true } }))
+
+  await page.goto('/'); await expect(page.getByText('How was Kyoto, Japan?')).toBeVisible()
+  await page.getByRole('button', { name: /Rate this trip/i }).click()
+  await expect(page.getByRole('heading', { name: itinerary.trip_title })).toBeVisible()
 })

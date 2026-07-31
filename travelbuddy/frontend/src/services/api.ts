@@ -1,4 +1,4 @@
-import type { CharacterProfile, Recommendation, StreamEvent, TripPreferences, TripState, User } from '../types'
+import type { CharacterProfile, CharacterTraits, IntakeAnswer, IntakeState, PendingCheckInTrip, PostTripFeedbackResponse, ProfileWeights, StreamEvent, TripPreferences, TripState, User } from '../types'
 
 const TOKEN_KEY = 'travelbuddy.session'
 const JSON_TIMEOUT_MS = 20_000
@@ -11,6 +11,14 @@ interface ProblemBody {
     request_id?: string
     retryable?: boolean
   }
+}
+
+interface CharacterProfileUpdate {
+  summary: string
+  expectedVersion?: number
+  characterMd?: string
+  weights?: ProfileWeights
+  traits?: CharacterTraits
 }
 
 export class ApiError extends Error {
@@ -47,10 +55,10 @@ async function responseError(response: Response, fallback: string): Promise<ApiE
   )
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function request<T>(path: string, init: RequestInit = {}, timeoutMs = JSON_TIMEOUT_MS): Promise<T> {
   const token = localStorage.getItem(TOKEN_KEY)
   const controller = new AbortController()
-  const timeout = window.setTimeout(() => controller.abort(), JSON_TIMEOUT_MS)
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs)
   try {
     const response = await fetch(path, {
       ...init,
@@ -129,21 +137,32 @@ export const api = {
   },
   me: () => request<User>('/api/auth/me'),
   profile: () => request<CharacterProfile>('/api/profile/character'),
+  intake: () => request<IntakeState>('/api/profile/intake'),
+  answerIntake: (questionId: string, value: IntakeAnswer) => request<IntakeState>(`/api/profile/intake/answers/${encodeURIComponent(questionId)}`, {
+    method: 'PUT', body: JSON.stringify({ value }),
+  }),
+  completeIntake: () => request<CharacterProfile>('/api/profile/intake/complete', { method: 'POST' }, 90_000),
+  resetIntake: () => request('/api/profile/intake', { method: 'DELETE' }),
+  /** Legacy endpoint retained while older deployments roll forward. */
   profileChat: (message = '') => request<{ reply: string; done: boolean }>('/api/profile/chat', {
     method: 'POST', body: JSON.stringify({ message }),
   }),
-  updateProfile: (profile: Pick<CharacterProfile, 'summary' | 'traits'>) => request<CharacterProfile>('/api/profile/character', {
+  updateProfile: (profile: CharacterProfileUpdate) => request<CharacterProfile>('/api/profile/character', {
     method: 'PUT', body: JSON.stringify(profile),
   }),
   resetProfile: () => request('/api/profile/character/reset', { method: 'POST' }),
-  feedback: (recommendation: Recommendation, sentiment: 'like' | 'dislike') => request<CharacterProfile>('/api/profile/character/feedback', {
+  feedback: (tripId: string, recommendationId: string, sentiment: 'like' | 'dislike') => request<CharacterProfile>('/api/profile/character/feedback', {
     method: 'POST',
-    body: JSON.stringify({ recommendation_name: recommendation.name, category: recommendation.category, sentiment }),
+    body: JSON.stringify({ trip_id: tripId, recommendation_id: recommendationId, sentiment }),
   }),
   createTrip: (preferences: TripPreferences) => request<{ trip_id: string }>('/api/trip/preferences', {
     method: 'POST', body: JSON.stringify(preferences),
   }),
   trip: (id: string) => request<TripState>(`/api/trip/${id}`),
+  pendingCheckIn: () => request<{ trip: PendingCheckInTrip | null }>('/api/trips/pending-check-in'),
+  submitPostTripFeedback: (id: string, overallRating: 1 | 2 | 3 | 4 | 5) => request<PostTripFeedbackResponse>(`/api/trip/${encodeURIComponent(id)}/post-trip-feedback`, {
+    method: 'PUT', body: JSON.stringify({ overall_rating: overallRating }),
+  }),
   research: (id: string, onEvent: (event: StreamEvent) => void) => stream(`/api/trip/${id}/research`, onEvent),
   select: (id: string, selections: string[]) => request(`/api/trip/${id}/select`, {
     method: 'POST', body: JSON.stringify({ selections }),

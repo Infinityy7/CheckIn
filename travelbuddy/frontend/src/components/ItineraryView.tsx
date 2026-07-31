@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import { ArrowDown, ArrowUp, Bike, CalendarDays, Clock3, Coffee, Download, Hotel, MapPin, Share2, Sparkles, TrainFront } from 'lucide-react'
-import type { Itinerary, ItineraryItem, TripPreferences } from '../types'
+import type { Itinerary, ItineraryItem, PostTripState, TripPreferences } from '../types'
 import { Mascot } from './Mascot'
+import { PostTripCheckIn } from './PostTripCheckIn'
 import { Button } from './UI'
 
 const iconFor = (category: string) => category === 'restaurant' ? Coffee : category === 'transport' ? TrainFront : category === 'accommodation' ? Hotel : Bike
 
-export function ItineraryView({ itinerary, preferences, onBack }: { itinerary: Itinerary; preferences: TripPreferences; onBack: () => void }) {
+export function ItineraryView({ itinerary, preferences, postTrip, onBack, onRate }: { itinerary: Itinerary; preferences: TripPreferences; postTrip?: PostTripState; onBack: () => void; onRate: (rating: 1 | 2 | 3 | 4 | 5) => Promise<void> }) {
   const [plan, setPlan] = useState(itinerary)
   function move(dayIndex: number, itemIndex: number, delta: number) {
     const target = itemIndex + delta
@@ -33,6 +34,7 @@ export function ItineraryView({ itinerary, preferences, onBack }: { itinerary: I
         </div>})}</div>
       </article>)}</div>
     </section>
+    <PostTripCheckIn state={postTrip} onSubmit={onRate} />
     <footer className="travel-document-footer"><Mascot state="idle" size="sm" /><div><strong>Built around your character profile</strong><p>Recommendations were ranked for pace, budget, comfort, food curiosity, and local-vs-iconic preference.</p></div><span>TRAVEL WELL · STAY CURIOUS</span></footer>
   </main>
 }
