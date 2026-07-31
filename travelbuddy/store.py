@@ -1,104 +1,165 @@
-"""In-memory trip state store."""
+"""Durable trip state backed by the application database."""
 
 from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from config import TRIP_TTL_HOURS
+import db
 from schemas import AgentResult, Itinerary, TripPreferences, TripState
 
-# Simple dict-backed store, keyed by trip_id
-_trips: dict[str, TripState] = {}
+RESEARCH_LEASE_MINUTES = 15
 
 
-def _purge_old_trips() -> None:
-    # toss old trips so the dict doesn't grow forever
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=TRIP_TTL_HOURS)
-    expired = []
-    for trip_id, state in _trips.items():
-        created = datetime.fromisoformat(state.created_at)
-        if created < cutoff:
-            expired.append(trip_id)
-    for trip_id in expired:
-        del _trips[trip_id]
+class ResearchAlreadyRunning(RuntimeError):
+    """Raised when another healthy worker owns the research lease."""
+
+
+class ResearchLeaseLost(RuntimeError):
+    """Raised when a stale worker tries to write into a newer research run."""
+
+
+def _save(state: TripState) -> None:
+    """Persist a complete, validated trip snapshot.
+
+    A JSON snapshot keeps the agent/itinerary payload flexible while the indexed
+    ownership and timestamp fields live in normal database columns.
+    """
+    db.save_trip_state(state.model_dump(mode="json"))
 
 
 def create_trip(prefs: TripPreferences, user_id: str = "") -> TripState:
-    """Create a new trip and return its state."""
-    _purge_old_trips()
-    trip_id = str(uuid.uuid4())
+    """Create a durable trip and return its state."""
     state = TripState(
-        trip_id=trip_id,
+        trip_id=str(uuid.uuid4()),
         user_id=user_id,
         preferences=prefs,
         created_at=datetime.now(timezone.utc).isoformat(),
     )
-    _trips[trip_id] = state
+    _save(state)
     return state
 
 
 def get_trip(trip_id: str) -> TripState | None:
-    """Retrieve a trip by ID, or None if not found."""
-    return _trips.get(trip_id)
+    """Retrieve a trip by ID, or ``None`` when it does not exist."""
+    raw = db.load_trip_state(trip_id)
+    if raw is None:
+        return None
+    return TripState.model_validate(raw)
 
 
-def set_context_brief(trip_id: str, brief: str) -> None:
-    """Store the generated context brief."""
-    _trips[trip_id].context_brief = brief
+def list_user_trips(user_id: str) -> list[TripState]:
+    """Return a user's trips newest first."""
+    return [TripState.model_validate(raw) for raw in db.list_trip_states(user_id)]
 
 
-def start_research(trip_id: str) -> None:
-    # mark research as running and wipe old results,
-    # so re-running /research replaces instead of duplicating
-    state = _trips[trip_id]
-    state.research_in_progress = True
-    state.research_results = []
-    state.research_errors = []
-    # The previous recommendation IDs are about to be replaced. Keeping
-    # selections or an itinerary here would leave stale references behind.
-    state.selections = None
-    state.itinerary = None
+def _require_lease(state: dict, lease_id: str) -> None:
+    if state.get("research_lease_id") != lease_id:
+        raise ResearchLeaseLost("This research run was replaced by a newer one")
 
 
-def finish_research(trip_id: str) -> None:
-    state = _trips.get(trip_id)
-    if state is not None:
-        state.research_in_progress = False
+def set_context_brief(trip_id: str, brief: str, lease_id: str) -> None:
+    def update(state: dict) -> None:
+        _require_lease(state, lease_id)
+        state["context_brief"] = brief
+
+    db.mutate_trip_state(trip_id, update)
 
 
-def add_agent_result(trip_id: str, result: AgentResult) -> None:
-    """Append a single agent's result to the trip."""
-    state = _trips[trip_id]
-    if state.research_results is None:
-        state.research_results = []
-    state.research_results.append(result)
+def start_research(trip_id: str) -> str:
+    now = datetime.now(timezone.utc)
+    lease_id = str(uuid.uuid4())
+
+    def acquire(state: dict) -> None:
+        started_at = state.get("research_started_at")
+        started = datetime.fromisoformat(started_at) if started_at else None
+        if started is not None and started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        lease_is_live = (
+            state.get("research_in_progress") is True
+            and started is not None
+            and started > now - timedelta(minutes=RESEARCH_LEASE_MINUTES)
+        )
+        if lease_is_live:
+            raise ResearchAlreadyRunning("Research is already running for this trip")
+        state.update({
+            "research_in_progress": True,
+            "research_started_at": now.isoformat(),
+            "research_lease_id": lease_id,
+            "research_results": [],
+            "research_errors": [],
+            # A refreshed shortlist invalidates IDs from the previous run.
+            "selections": None,
+            "itinerary": None,
+            "post_trip": None,
+        })
+
+    db.mutate_trip_state(trip_id, acquire)
+    return lease_id
 
 
-def add_research_error(trip_id: str, error: str) -> None:
-    """Record an agent failure."""
-    state = _trips[trip_id]
-    if state.research_errors is None:
-        state.research_errors = []
-    state.research_errors.append(error)
+def finish_research(trip_id: str, lease_id: str) -> None:
+    def release(state: dict) -> None:
+        # A stale worker must not clear the newer worker's lease.
+        if state.get("research_lease_id") != lease_id:
+            return
+        state.update({
+            "research_in_progress": False,
+            "research_started_at": None,
+            "research_lease_id": None,
+        })
+
+    try:
+        db.mutate_trip_state(trip_id, release)
+    except KeyError:
+        return
+
+
+def add_agent_result(trip_id: str, result: AgentResult, lease_id: str) -> None:
+    payload = result.model_dump(mode="json")
+
+    def append(state: dict) -> None:
+        _require_lease(state, lease_id)
+        results = list(state.get("research_results") or [])
+        results.append(payload)
+        state["research_results"] = results
+
+    db.mutate_trip_state(trip_id, append)
+
+
+def add_research_error(trip_id: str, error: str, lease_id: str) -> None:
+    def append(state: dict) -> None:
+        _require_lease(state, lease_id)
+        errors = list(state.get("research_errors") or [])
+        errors.append(error)
+        state["research_errors"] = errors
+
+    db.mutate_trip_state(trip_id, append)
 
 
 def set_selections(trip_id: str, selections: list[str]) -> None:
-    """Store the user's selected recommendation IDs."""
-    _trips[trip_id].selections = selections
+    db.mutate_trip_state(trip_id, lambda state: state.update({"selections": selections}))
 
 
 def set_itinerary(trip_id: str, itinerary: Itinerary) -> None:
-    """Store the generated itinerary."""
-    _trips[trip_id].itinerary = itinerary
+    payload = itinerary.model_dump(mode="json")
+    db.mutate_trip_state(trip_id, lambda state: state.update({"itinerary": payload}))
+
+
+def set_post_trip(trip_id: str, post_trip: dict) -> None:
+    """Persist derived feedback state without overwriting concurrent trip fields."""
+    db.mutate_trip_state(trip_id, lambda state: state.update({"post_trip": post_trip}))
 
 
 def get_all_recommendations(trip_id: str) -> list:
-    """Flatten all recommendations from all agent results."""
-    state = _trips[trip_id]
+    state = _required(trip_id)
     if not state.research_results:
         return []
-    recs = []
-    for ar in state.research_results:
-        recs.extend(ar.recommendations)
-    return recs
+    return [recommendation for result in state.research_results for recommendation in result.recommendations]
+
+
+def _required(trip_id: str) -> TripState:
+    state = get_trip(trip_id)
+    if state is None:
+        raise KeyError(f"Unknown trip {trip_id}")
+    return state

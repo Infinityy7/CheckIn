@@ -27,6 +27,3 @@ LLM_MAX_CONCURRENT_CALLS: int = 4
 
 # CORS: comma-separated list of allowed origins, "*" for local development
 ALLOWED_ORIGINS: list[str] = os.environ.get("ALLOWED_ORIGINS", "*").split(",")
-
-# trips older than this get purged from the in-memory store
-TRIP_TTL_HOURS: int = 24
