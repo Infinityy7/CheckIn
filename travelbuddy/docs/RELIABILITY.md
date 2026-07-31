@@ -1,6 +1,6 @@
 # Reliability baseline
 
-This document describes the lightweight reliability layer used by the current MVP. It deliberately does not introduce PostgreSQL, a job queue, supplier integrations, payments, or distributed booking workflows.
+This document describes the reliability layer used by the current MVP. PostgreSQL now provides shared sessions, profiles, trip snapshots, resumable intake, and an idempotent learning ledger. Job queues, supplier integrations, payments, and distributed booking workflows remain out of scope.
 
 ## Public error contract
 
@@ -34,16 +34,15 @@ Successful research categories remain available when another category fails. The
 - Long-running research streams use the backend's existing OpenAI timeouts and bounded model fallback; the browser does not blindly replay POST requests.
 - Rate limits, provider timeouts, and temporary provider failures may move to the configured fallback model.
 - Authentication, permissions, quota exhaustion, malformed inputs, and non-temporary errors are not retried automatically.
-- Recommendation feedback is shown as saved only after the API confirms it.
+- Recommendation and post-trip feedback are shown as saved only after an idempotent database transaction confirms them.
+- Research runs use expiring ownership leases, so a second worker cannot overwrite a live run and a crashed worker cannot strand the trip forever.
 
 ## Deliberately deferred
 
 The following remain part of the planned backend phase and are not hidden by this baseline:
 
-- Trips and sessions are still process-local prototype state.
-- Profiles and users still use SQLite.
 - There is no durable background job queue.
 - There is no provider-specific circuit breaker or operational alerting service.
 - There is no supplier booking, payment, refund, or compensation workflow.
 
-Before a multi-worker deployment, sessions and trips must move to shared storage. Before real booking, retry and reconciliation rules must be designed separately for each supplier operation.
+Before real booking, retry and reconciliation rules must be designed separately for each supplier operation.

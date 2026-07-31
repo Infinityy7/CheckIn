@@ -10,21 +10,22 @@
 
 ## Application flow
 
-`App.tsx` is the small orchestration boundary. It restores the Bearer session, loads the profile once, optionally restores the last in-memory trip, and moves between planner, workspace, and itinerary stages. Domain UI stays in dedicated components:
+`App.tsx` is the small orchestration boundary. It restores the Bearer session, loads the profile once, optionally restores the last durable trip, and moves between planner, workspace, and itinerary stages. Domain UI stays in dedicated components:
 
 - `Mascot.tsx`: original Tavi SVG with eight state classes
-- `Onboarding.tsx`: one-question conversation, quick replies, free text, profile reveal
+- `Onboarding.tsx`: deterministic nine-question conversation, saved progress, profile reveal
 - `TripForm.tsx`: validated trip inputs matching `TripPreferences`
 - `Workspace.tsx`: agent activity, category tabs, score/rank cards, selection docket
-- `ProfileDrawer.tsx`: summary editing, normalized traits, retake flow
-- `ItineraryView.tsx`: day timeline, reorder controls, route notes, print layout
+- `ProfileDrawer.tsx`: character prose, structured weights, hard boundaries, retake flow
+- `PostTripCheckIn.tsx`: accessible, submit-once 1–5 learning signal
+- `ItineraryView.tsx`: day timeline, reorder controls, route notes, rating, print layout
 - `UI.tsx`: shared buttons, drawers, chat bubbles, loading/empty/error states
 
 `services/api.ts` is the only frontend networking module. It owns authorization headers, JSON errors, and POST-based SSE parsing. Components never contain raw `fetch` calls.
 
 ## Profile integration
 
-The database still stores the profile as a `character.md`-style sketch (`sketch_md`) plus `taste_json`. The new adapter returns a stable UI shape with summary, normalized traits, raw answers, version, and timestamps. Existing `likes`, `dislikes`, diet, and pace values remain available to the ranker; editable adventure, comfort, spontaneity, local-vs-tourist, food, nightlife, nature, social, and budget traits now contribute directly to score fit. Card feedback is persisted as a weighted taste signal before alternatives are refreshed.
+PostgreSQL stores a versioned `character_md` sketch and structured JSONB weights. The adapter returns camelCase summary, weights, raw answers, version, and timestamps. The sketch guides search; controlled vibe weights, spend choices, pace, dietary needs, and dealbreakers guide deterministic ranking. Card feedback is resolved by owned trip/recommendation IDs, while selected choices and the post-trip rating are learned together after the trip.
 
 ## Design system
 

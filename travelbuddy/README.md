@@ -6,7 +6,7 @@ The frontend is React 19 + TypeScript + Vite and is served by the existing FastA
 
 ## Setup
 
-Requirements: Python 3.11+, Node.js 20+, and an OpenAI API key.
+Requirements: Python 3.11+, Node.js 20+, PostgreSQL 17 (or Docker), and an OpenAI API key.
 
 ```bash
 cd travelbuddy
@@ -14,6 +14,8 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt
 cp .env.example .env
+docker compose up -d db
+alembic upgrade head
 cd frontend
 npm install
 npm run build
@@ -37,18 +39,25 @@ npm run dev
 
 Vite proxies `/api` requests to FastAPI on port 8000.
 
+If PostgreSQL already runs locally, set `DATABASE_URL` to that database instead of starting Docker. To import the old SQLite accounts and profiles once:
+
+```bash
+.venv/bin/python scripts/migrate_sqlite_to_postgres.py --sqlite-path data/travelbuddy.db
+```
+
 ## User flow
 
 1. Register or sign in.
-2. Complete the six-turn, mascot-led onboarding conversation.
-3. Review the generated persistent character profile.
+2. Complete the nine-question, mascot-led onboarding conversation.
+3. Review the generated `character.md` sketch and editable preference controls.
 4. Enter destination, dates, budget, travelers, and trip interests.
 5. Watch the four research agents finish independently.
 6. Compare the top three profile-ranked choices in each category.
 7. Select preferred options and generate the itinerary.
-8. Edit or retake the character profile at any time.
+8. After the trip, submit one 1–5 check-in so the saved choices and rating gently tune the profile weights.
+9. Edit or retake the character profile at any time.
 
-The natural-language profile and structured traits are stored in SQLite. It is generated once, included in research/ranking, learned from after itinerary creation, and is not regenerated on ordinary visits.
+PostgreSQL stores two separate profile artifacts: natural-language `character.md` guides research, while structured weights drive deterministic ranking. The character sketch is generated once and is not regenerated on ordinary visits. Questionnaire drafts, sessions, trips, ratings, and an idempotent preference-event ledger are durable across restarts.
 
 ## Character profile API
 
@@ -56,13 +65,16 @@ All profile and trip endpoints require the Bearer token returned by the auth end
 
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
-| `POST` | `/api/profile/chat` | Continue the conversational intake |
+| `GET` | `/api/profile/intake` | Read or resume the nine-question draft |
+| `PUT` | `/api/profile/intake/answers/{questionId}` | Validate and save one answer |
+| `POST` | `/api/profile/intake/complete` | Generate `character.md` and compile weights |
+| `DELETE` | `/api/profile/intake` | Clear the draft/profile and retake onboarding |
 | `GET` | `/api/profile/character` | Read the stable character-profile contract |
 | `PUT` | `/api/profile/character` | Edit the summary and structured traits |
 | `POST` | `/api/profile/character/feedback` | Persist a recommendation like/dislike signal |
 | `POST` | `/api/profile/character/reset` | Delete the profile and retake onboarding |
 
-The legacy `GET /api/profile` contract remains available for compatibility.
+The legacy `GET /api/profile` and `/api/profile/chat` contracts remain available for compatibility.
 
 ## Trip API flow
 
@@ -73,6 +85,8 @@ The legacy `GET /api/profile` contract remains available for compatibility.
 | `POST` | `/api/trip/{id}/select` | Validate and save recommendation IDs |
 | `POST` | `/api/trip/{id}/itinerary` | Stream itinerary generation with SSE |
 | `GET` | `/api/trip/{id}` | Read current trip state |
+| `GET` | `/api/trips/pending-check-in` | Find the newest completed, unrated trip |
+| `PUT` | `/api/trip/{id}/post-trip-feedback` | Save an idempotent 1–5 post-trip rating |
 
 ## Quality checks
 
@@ -92,11 +106,12 @@ The Playwright suite launches FastAPI on port 8010, verifies onboarding, returni
 
 ## Current backend boundaries
 
-- Trip state remains in memory and expires after 24 hours; profiles and accounts persist in SQLite.
 - “Show alternatives” reruns the existing research pipeline because the backend does not expose pagination.
-- Recommendation feedback is stored in the taste profile and affects the next research/ranking run.
+- Recommendation candidates depend on agent-provided controlled tags; unverified dietary compatibility is filtered rather than guessed.
 - Share copies the current URL and export uses the browser’s print/PDF support; there is no hosted share document or booking provider integration.
 - Destination imagery is intentionally represented with map motifs until a licensed image/search proxy is exposed by the backend.
+
+See [docs/PERSONALIZATION.md](docs/PERSONALIZATION.md) for the questionnaire, ranker, learning formula, database layout, and API contracts.
 
 ## Reliability baseline
 
