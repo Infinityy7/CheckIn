@@ -1,0 +1,183 @@
+name: Quality pipeline
+
+on:
+  pull_request:
+    paths:
+      - 'travelbuddy/**'
+      - '.github/workflows/quality.yml'
+  push:
+    paths:
+      - 'travelbuddy/**'
+      - '.github/workflows/quality.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+    working-directory: travelbuddy
+
+env:
+  OPENAI_API_KEY: test-key-not-a-secret
+  QUALITY_ARTIFACTS_DIR: ${{ github.workspace }}/artifacts
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  security:
+    name: Secrets and repository safety
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Scan tracked files without printing credential values
+        run: ./scripts/quality.sh --security
+      - name: Upload security report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-report
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 14
+
+  backend:
+    name: Backend tests and contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DATABASE_URL: postgresql+psycopg://travelbuddy:travelbuddy@localhost:5432/travelbuddy_test
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: travelbuddy
+          POSTGRES_PASSWORD: travelbuddy
+          POSTGRES_DB: travelbuddy_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U travelbuddy -d travelbuddy_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: travelbuddy/requirements*.txt
+      - name: Create isolated Python environment
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install -r requirements-dev.txt
+      - name: Apply the production PostgreSQL migration from zero
+        run: |
+          mkdir -p "$QUALITY_ARTIFACTS_DIR"
+          set -o pipefail
+          .venv/bin/alembic upgrade head 2>&1 | tee "$QUALITY_ARTIFACTS_DIR/postgres-migration.log"
+          .venv/bin/python -c 'import db; db.init_db(); print("PostgreSQL schema boot passed")' 2>&1 | tee -a "$QUALITY_ARTIFACTS_DIR/postgres-migration.log"
+      - name: Run backend unit, integration, contract, and coverage checks
+        run: ./scripts/quality.sh --backend
+      - name: Upload backend diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-quality
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 14
+
+  frontend:
+    name: Frontend lint, types, unit tests, and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: travelbuddy/frontend/package-lock.json
+      - name: Install locked frontend dependencies
+        run: npm --prefix frontend ci
+      - name: Run frontend quality and coverage checks
+        run: ./scripts/quality.sh --frontend
+      - name: Upload frontend diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-quality
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 14
+
+  e2e:
+    name: Browser smoke and responsive checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: travelbuddy/requirements*.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: travelbuddy/frontend/package-lock.json
+      - name: Install locked application dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install -r requirements-dev.txt
+          npm --prefix frontend ci
+      - name: Install the CI browser
+        working-directory: travelbuddy/frontend
+        run: npx playwright install --with-deps chromium
+      - name: Run deterministic end-to-end checks
+        run: ./scripts/quality.sh --e2e
+      - name: Upload browser traces, screenshots, and reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-quality
+          path: |
+            artifacts/
+            travelbuddy/frontend/test-results/
+          if-no-files-found: warn
+          retention-days: 14
+
+  quality-gate:
+    name: Required quality gate
+    if: always()
+    needs: [security, backend, frontend, e2e]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every quality section
+        working-directory: .
+        env:
+          SECURITY: ${{ needs.security.result }}
+          BACKEND: ${{ needs.backend.result }}
+          FRONTEND: ${{ needs.frontend.result }}
+          E2E: ${{ needs.e2e.result }}
+        run: |
+          printf 'security=%s\nbackend=%s\nfrontend=%s\ne2e=%s\n' "$SECURITY" "$BACKEND" "$FRONTEND" "$E2E"
+          test "$SECURITY" = success
+          test "$BACKEND" = success
+          test "$FRONTEND" = success
+          test "$E2E" = success
