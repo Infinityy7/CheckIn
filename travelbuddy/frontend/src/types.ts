@@ -135,6 +135,109 @@ export interface Recommendation {
   score_breakdown: Record<string, number>
 }
 
+export type InventorySourceMode = 'live' | 'test' | 'demo' | 'unavailable'
+export type AvailabilityStatus = 'available' | 'limited' | 'unavailable' | 'price_changed' | 'expired' | 'unknown'
+export type CartItemStatus = 'saved' | 'quoted' | 'held' | 'revalidating' | 'booking' | 'booked' | 'confirmed' | 'price_changed' | 'unavailable' | 'expired' | 'error'
+
+export interface Money {
+  amount: number
+  currency: string
+}
+
+export interface InventorySource {
+  source: string
+  sourceMode: InventorySourceMode
+  isLive: boolean
+}
+
+export interface HotelRatePlan extends InventorySource {
+  id: string
+  label: string
+  total: Money
+  nightly: Money
+  taxesAndFees: Money
+  refundable: boolean
+  cancellationSummary: string
+  cancellation?: Record<string, unknown> | null
+  availabilityStatus: AvailabilityStatus
+  roomsRemaining?: number
+  quoteExpiresAt?: string
+  holdExpiresAt?: string
+}
+
+export interface HotelRoomType {
+  id: string
+  name: string
+  description?: string
+  occupancy: {
+    adults: number
+    children: number
+    maxGuests: number
+  }
+  beds: Array<{ type: string; count: number }>
+  board: string
+  ratePlans: HotelRatePlan[]
+}
+
+export interface HotelAvailability extends InventorySource {
+  hotelId: string
+  recommendationId: string
+  checkedAt: string
+  rooms: HotelRoomType[]
+}
+
+export interface TripCartItem {
+  id: string
+  recommendationId: string
+  ratePlanId?: string
+  kind: 'hotel' | 'flight' | 'ride' | 'restaurant'
+  title: string
+  subtitle?: string
+  status: CartItemStatus
+  total?: Money
+  source?: string
+  sourceMode?: InventorySourceMode
+  isLive?: boolean
+  quoteExpiresAt?: string
+  holdExpiresAt?: string
+  addedAt?: string
+  checkedAt?: string
+  message?: string
+}
+
+export interface TripCart {
+  tripId: string
+  state: 'open' | 'revalidating' | 'ready' | 'checkout' | 'confirmed' | 'partial' | 'error'
+  items: TripCartItem[]
+  /** Saved-cart expiry is a UI/session lifetime only; it never promises supplier inventory. */
+  savedExpiresAt?: string
+  earliestHoldExpiresAt?: string
+  checkedAt: string
+}
+
+export interface FlightOffer extends InventorySource {
+  id: string
+  carrier: string
+  flightNumber?: string
+  origin: string
+  destination: string
+  departAt: string
+  arriveAt: string
+  durationMinutes: number
+  stops: number
+  journeyType?: 'one_way' | 'round_trip'
+  total: Money
+  availabilityStatus: AvailabilityStatus
+  quoteExpiresAt?: string
+  holdExpiresAt?: string
+}
+
+export interface FlightAvailability extends InventorySource {
+  recommendationId: string
+  checkedAt: string
+  offers: FlightOffer[]
+}
+
 export interface AgentResult {
   agent_name: string
   recommendations: Recommendation[]

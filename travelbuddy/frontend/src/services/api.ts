@@ -1,4 +1,4 @@
-import type { CharacterProfile, CharacterTraits, IntakeAnswer, IntakeState, PendingCheckInTrip, PostTripFeedbackResponse, ProfileWeights, StreamEvent, TripPreferences, TripState, User } from '../types'
+import type { CharacterProfile, CharacterTraits, FlightAvailability, HotelAvailability, IntakeAnswer, IntakeState, PendingCheckInTrip, PostTripFeedbackResponse, ProfileWeights, StreamEvent, TripCart, TripPreferences, TripState, User } from '../types'
 
 const TOKEN_KEY = 'travelbuddy.session'
 const JSON_TIMEOUT_MS = 20_000
@@ -197,6 +197,24 @@ export const api = {
     method: 'POST', body: JSON.stringify(preferences),
   }),
   trip: (id: string) => request<TripState>(`/api/trip/${id}`),
+  hotelRates: (tripId: string, recommendationId: string) => request<HotelAvailability>(
+    `/api/trip/${encodeURIComponent(tripId)}/hotels/${encodeURIComponent(recommendationId)}/rates`,
+  ),
+  flightOffers: (tripId: string, recommendationId: string) => request<FlightAvailability>(
+    `/api/trip/${encodeURIComponent(tripId)}/flights/${encodeURIComponent(recommendationId)}/offers`,
+  ),
+  cart: (tripId: string) => request<TripCart>(`/api/trip/${encodeURIComponent(tripId)}/cart`),
+  addCartItem: (tripId: string, recommendationId: string, ratePlanId: string | undefined, kind: 'hotel' | 'flight' | 'ride' | 'restaurant') => request<TripCart>(
+    `/api/trip/${encodeURIComponent(tripId)}/cart/items`, {
+      method: 'POST', body: JSON.stringify({ recommendationId, ...(ratePlanId ? { ratePlanId } : {}), kind }),
+    },
+  ),
+  removeCartItem: (tripId: string, itemId: string) => request<TripCart>(
+    `/api/trip/${encodeURIComponent(tripId)}/cart/items/${encodeURIComponent(itemId)}`, { method: 'DELETE' },
+  ),
+  revalidateCart: (tripId: string) => request<TripCart>(`/api/trip/${encodeURIComponent(tripId)}/cart/revalidate`, {
+    method: 'POST',
+  }, 45_000),
   pendingCheckIn: () => request<{ trip: PendingCheckInTrip | null }>('/api/trips/pending-check-in'),
   submitPostTripFeedback: (id: string, overallRating: 1 | 2 | 3 | 4 | 5) => request<PostTripFeedbackResponse>(`/api/trip/${encodeURIComponent(id)}/post-trip-feedback`, {
     method: 'PUT', body: JSON.stringify({ overall_rating: overallRating }),

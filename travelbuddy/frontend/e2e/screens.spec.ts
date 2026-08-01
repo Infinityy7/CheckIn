@@ -1,7 +1,11 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
+import fs from 'node:fs'
 import path from 'node:path'
 
-const shots = path.resolve(process.cwd(), '../screenshots')
+const shots = process.env.TRAVELBUDDY_E2E_ARTIFACTS
+  ? path.resolve(process.env.TRAVELBUDDY_E2E_ARTIFACTS)
+  : path.resolve(process.cwd(), '../screenshots')
+fs.mkdirSync(shots, { recursive: true })
 const profile = {
   id: 'character:e2e', version: 1,
   summary: 'Vedant is an energetic, moderately budget-conscious traveler who prioritizes memorable experiences over luxury. He follows local food, dramatic landscapes, unusual activities, and flexible schedules, preferring a few high-impact places over a rushed checklist.',
@@ -61,6 +65,21 @@ async function session(page: Page, trip = false, final = false, eligible = false
   await page.route('**/api/profile/chat', (route) => json(route, { reply: 'Let’s remap your travel style. What pace feels best?', done: false }))
   await page.route('**/api/profile/character', (route) => { if (route.request().method() === 'PUT') calls.profilePuts += 1; return json(route, profile) })
   await page.route('**/api/trips/pending-check-in', (route) => json(route, { trip: null }))
+  await page.route('**/api/trip/trip-e2e/cart/items', (route) => json(route, {
+    tripId: 'trip-e2e', state: 'open', savedExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString(), checkedAt: new Date().toISOString(), items: [{
+      id: 'cart-e2e', recommendationId: 'transport-1', ratePlanId: 'flight-e2e', kind: 'flight',
+      title: 'Test flight offer', status: 'quoted', total: { amount: 740, currency: 'USD' },
+      source: 'Controlled fixture', sourceMode: 'test', isLive: false,
+    }],
+  }))
+  await page.route('**/api/trip/trip-e2e/cart/items/*', (route) => json(route, {
+    tripId: 'trip-e2e', state: 'open', savedExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+    items: [], checkedAt: new Date().toISOString(),
+  }))
+  await page.route('**/api/trip/trip-e2e/cart', (route) => json(route, {
+    tripId: 'trip-e2e', state: 'open', savedExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+    items: [], checkedAt: new Date().toISOString(),
+  }))
   await page.route('**/api/trip/trip-e2e/post-trip-feedback', (route) => { calls.postTrip += 1; return json(route, { postTrip: { eligible: true, rating: 5, adjustments: [{ key: 'food', before: .35, after: .38, delta: .03 }] }, profile: { ...profile, version: 2 } }) })
   if (trip) await page.route('**/api/trip/trip-e2e', (route) => json(route, { trip_id: 'trip-e2e', preferences, research_results: categories.map((category) => ({ agent_name: `${category} Agent`, recommendations: recommendations.filter((item) => item.category === category) })), selections: [], ...(final ? { itinerary } : {}), postTrip: { eligible } }))
   return calls
@@ -124,7 +143,7 @@ test('ranked recommendations select and generate a final itinerary', async ({ pa
   await page.goto('/'); await expect(page.getByRole('heading', { name: 'The shortlist' })).toBeVisible()
   await page.screenshot({ path: `${shots}/06-ranked-recommendations.png`, fullPage: true })
   await page.getByRole('button', { name: /Show fewer places like/ }).first().click(); expect(calls.feedback).toBe(1)
-  await page.getByRole('button', { name: /Choose this/ }).first().click(); await expect(page.getByText('1 selected')).toBeVisible()
+  await page.locator('.recommendation__footer').first().getByRole('button', { name: /^Choose this$/ }).click(); await expect(page.getByText('1 selected')).toBeVisible()
   await page.getByRole('button', { name: /Build my itinerary/ }).click(); await expect(page.getByRole('heading', { name: itinerary.trip_title })).toBeVisible()
   await page.screenshot({ path: `${shots}/07-final-itinerary.png`, fullPage: true })
 })

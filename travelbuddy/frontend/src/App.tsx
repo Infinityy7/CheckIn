@@ -159,7 +159,7 @@ export default function App() {
     {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')}>Dismiss</button></div>}
     {screen === 'planner' && pendingCheckIn && <aside className="pending-checkin" aria-label="Trip check-in"><div><Sparkles /><p><strong>How was {pendingCheckIn.destination}?</strong><span>A quick rating helps Tavi plan the next one better.</span></p></div><Button variant="secondary" onClick={openPendingTrip}>Rate this trip</Button></aside>}
     {screen === 'planner' && <TripForm onSubmit={createTrip} busy={loading} />}
-    {screen === 'workspace' && trip && <Workspace destination={trip.preferences.destination} preferences={trip.preferences} profile={profile} recommendations={recommendations} agents={agents} researching={researching} selections={selections} onToggle={(id) => setSelections((items) => items.includes(id) ? items.filter((item) => item !== id) : [...items, id])} onAlternatives={() => runResearch()} onFeedback={async (item) => {
+    {screen === 'workspace' && trip && <Workspace tripId={trip.trip_id} destination={trip.preferences.destination} preferences={trip.preferences} profile={profile} recommendations={recommendations} agents={agents} researching={researching} selections={selections} onToggle={(id) => setSelections((items) => items.includes(id) ? items.filter((item) => item !== id) : [...items, id])} onAlternatives={() => runResearch()} onFeedback={async (item) => {
       try { const next = await api.feedback(trip.trip_id, item.id, 'dislike'); setProfile(next) }
       catch (reason) { setError(userErrorMessage(reason, 'Could not save that preference.')); throw reason }
     }} onBuild={buildItinerary} />}
