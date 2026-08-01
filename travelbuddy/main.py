@@ -7,6 +7,7 @@ import json
 import logging
 import time
 
+from contextlib import asynccontextmanager
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -21,6 +22,18 @@ import api_errors
 import db
 import profiles
 from config import ALLOWED_ORIGINS, LOG_LEVEL, SSE_HEARTBEAT_SECONDS
+from inventory.models import AddCartItemInput, Cart, FlightInventory, HotelInventory
+from inventory.providers import (
+    InventoryProviderError,
+    ProviderConfigurationError,
+    ProviderItemUnavailableError,
+)
+from inventory.service import (
+    InventoryDomainError,
+    InventoryService,
+    close_inventory_service,
+    get_inventory_service,
+)
 from itinerary import generate_itinerary
 from llm_client import get_llm_health, is_fatal_error
 from orchestrator import ALL_AGENT_NAMES, generate_context_brief, run_agents_streaming
@@ -73,10 +86,18 @@ logger = logging.getLogger(__name__)
 db.init_db()
 
 # --- App ---
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    yield
+    await close_inventory_service()
+
+
 app = FastAPI(
     title="TravelBuddy",
     description="AI-powered travel planning with specialized research agents",
     version="0.3.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -170,6 +191,25 @@ def _post_trip_state(state: TripState, user_id: str) -> PostTripState:
         submittedAt=feedback.get("created_at") if feedback else None,
         adjustments=details.get("adjustments", []) if isinstance(details, dict) else [],
     )
+
+
+def _raise_inventory_failure(exc: Exception) -> None:
+    """Translate supplier/domain failures without exposing provider payloads."""
+    if isinstance(exc, InventoryDomainError):
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    if isinstance(exc, ProviderConfigurationError):
+        raise HTTPException(
+            status_code=503,
+            detail="Live booking inventory is not connected on this deployment.",
+        ) from exc
+    if isinstance(exc, ProviderItemUnavailableError):
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if isinstance(exc, InventoryProviderError):
+        raise HTTPException(
+            status_code=503,
+            detail="Live inventory could not be checked right now. Try again shortly.",
+        ) from exc
+    raise exc
 
 
 # --- Auth endpoints ---
@@ -375,6 +415,94 @@ async def submit_preferences(
         "status": "received",
         "preferences": prefs.model_dump(mode="json"),
     }
+
+
+# --- Supplier inventory and saved cart ---
+
+@app.get(
+    "/api/trip/{trip_id}/hotels/{recommendation_id}/rates",
+    response_model=HotelInventory,
+)
+async def get_hotel_rates(
+    trip_id: str,
+    recommendation_id: str,
+    user_id: str = Depends(auth.get_current_user),
+    service: InventoryService = Depends(get_inventory_service),
+) -> HotelInventory:
+    """Check dated room types and exact supplier prices for an owned recommendation."""
+    state = _get_owned_trip(trip_id, user_id)
+    try:
+        return await service.hotel_rates(state, recommendation_id)
+    except (InventoryDomainError, InventoryProviderError) as exc:
+        _raise_inventory_failure(exc)
+
+
+@app.get(
+    "/api/trip/{trip_id}/flights/{recommendation_id}/offers",
+    response_model=FlightInventory,
+)
+async def get_flight_offers(
+    trip_id: str,
+    recommendation_id: str,
+    user_id: str = Depends(auth.get_current_user),
+    service: InventoryService = Depends(get_inventory_service),
+) -> FlightInventory:
+    """Check dated supplier flight offers for an owned transport recommendation."""
+    state = _get_owned_trip(trip_id, user_id)
+    try:
+        return await service.flight_offers(state, recommendation_id)
+    except (InventoryDomainError, InventoryProviderError) as exc:
+        _raise_inventory_failure(exc)
+
+
+@app.get("/api/trip/{trip_id}/cart", response_model=Cart)
+async def get_trip_cart(
+    trip_id: str,
+    user_id: str = Depends(auth.get_current_user),
+    service: InventoryService = Depends(get_inventory_service),
+) -> Cart:
+    """Read the owned trip's saved shortlist and independent expiry clocks."""
+    return service.cart(_get_owned_trip(trip_id, user_id))
+
+
+@app.post("/api/trip/{trip_id}/cart/items", response_model=Cart)
+async def add_trip_cart_item(
+    trip_id: str,
+    body: AddCartItemInput,
+    user_id: str = Depends(auth.get_current_user),
+    service: InventoryService = Depends(get_inventory_service),
+) -> Cart:
+    """Save an exact server-verified rate/offer or a non-bookable recommendation."""
+    state = _get_owned_trip(trip_id, user_id)
+    try:
+        return await service.add_item(state, body)
+    except (InventoryDomainError, InventoryProviderError) as exc:
+        _raise_inventory_failure(exc)
+
+
+@app.delete("/api/trip/{trip_id}/cart/items/{item_id}", response_model=Cart)
+async def remove_trip_cart_item(
+    trip_id: str,
+    item_id: str,
+    user_id: str = Depends(auth.get_current_user),
+    service: InventoryService = Depends(get_inventory_service),
+) -> Cart:
+    """Remove one item from an owned trip's saved shortlist."""
+    state = _get_owned_trip(trip_id, user_id)
+    try:
+        return service.remove_item(state, item_id)
+    except InventoryDomainError as exc:
+        _raise_inventory_failure(exc)
+
+
+@app.post("/api/trip/{trip_id}/cart/revalidate", response_model=Cart)
+async def revalidate_trip_cart(
+    trip_id: str,
+    user_id: str = Depends(auth.get_current_user),
+    service: InventoryService = Depends(get_inventory_service),
+) -> Cart:
+    """Recheck every supplier item and surface price/availability changes."""
+    return await service.revalidate(_get_owned_trip(trip_id, user_id))
 
 
 @app.post("/api/trip/{trip_id}/research")

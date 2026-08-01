@@ -6,7 +6,7 @@ The frontend is React 19 + TypeScript + Vite and is served by the existing FastA
 
 ## Setup
 
-Requirements: Python 3.11+, Node.js 20+, PostgreSQL 17 (or Docker), and an OpenAI API key.
+Requirements: Python 3.11+, Node.js 20+, PostgreSQL 17 (or Docker), and an OpenAI API key. Duffel credentials are optional and only required for supplier-backed hotel and flight inventory.
 
 ```bash
 cd travelbuddy
@@ -38,6 +38,22 @@ npm run dev
 ```
 
 Vite proxies `/api` requests to FastAPI on port 8000.
+
+### Inventory quick start
+
+The default `INVENTORY_PROVIDER=unavailable` makes no supplier requests. To
+preview room types, exact-price UI, flight offers, and the saved cart without
+supplier credentials, set this in `.env` and restart FastAPI:
+
+```dotenv
+INVENTORY_PROVIDER=demo
+```
+
+Demo inventory is sample data, clearly labelled non-live, and cannot be booked.
+For Duffel test inventory, use `INVENTORY_PROVIDER=duffel`,
+`DUFFEL_MODE=test`, and a server-side `DUFFEL_ACCESS_TOKEN`. Hotel searches also
+require Duffel Stays access. See [docs/INVENTORY.md](docs/INVENTORY.md) for the
+full configuration and production boundary.
 
 If PostgreSQL already runs locally, set `DATABASE_URL` to that database instead of starting Docker. To import the old SQLite accounts and profiles once:
 
@@ -88,6 +104,21 @@ The legacy `GET /api/profile` and `/api/profile/chat` contracts remain available
 | `GET` | `/api/trips/pending-check-in` | Find the newest completed, unrated trip |
 | `PUT` | `/api/trip/{id}/post-trip-feedback` | Save an idempotent 1–5 post-trip rating |
 
+## Inventory and saved cart API
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/trip/{id}/hotels/{recommendationId}/rates` | Read dated room types, availability, prices, and cancellation terms |
+| `GET` | `/api/trip/{id}/flights/{recommendationId}/offers` | Read dated supplier flight offers |
+| `GET` | `/api/trip/{id}/cart` | Read the trip-owned saved shortlist and expiry clocks |
+| `POST` | `/api/trip/{id}/cart/items` | Save a verified rate/offer or non-bookable trip choice |
+| `DELETE` | `/api/trip/{id}/cart/items/{itemId}` | Remove a saved item |
+| `POST` | `/api/trip/{id}/cart/revalidate` | Recheck price and availability with the supplier |
+
+The saved cart is **not a reservation**. Its default 60-minute timer only
+controls how long TravelBuddy keeps the shortlist. Supplier quote and hold
+expiries are shown separately. Payment and booking are not implemented.
+
 ## Quality checks
 
 ```bash
@@ -108,7 +139,8 @@ The Playwright suite launches FastAPI on port 8010, verifies onboarding, returni
 
 - “Show alternatives” reruns the existing research pipeline because the backend does not expose pagination.
 - Recommendation candidates depend on agent-provided controlled tags; unverified dietary compatibility is filtered rather than guessed.
-- Share copies the current URL and export uses the browser’s print/PDF support; there is no hosted share document or booking provider integration.
+- Share copies the current URL and export uses the browser’s print/PDF support; there is no hosted share document.
+- The Duffel adapter can check hotel and flight inventory, but there is no payment, order, booking, ticketing, cancellation, or refund flow.
 - Destination imagery is intentionally represented with map motifs until a licensed image/search proxy is exposed by the backend.
 
 See [docs/PERSONALIZATION.md](docs/PERSONALIZATION.md) for the questionnaire, ranker, learning formula, database layout, and API contracts.
@@ -127,3 +159,5 @@ See [docs/PERSONALIZATION.md](docs/PERSONALIZATION.md) for the questionnaire, ra
 See [docs/RELIABILITY.md](docs/RELIABILITY.md) for the contract, retry rules, and intentionally deferred architecture work.
 
 See [docs/FRONTEND_ARCHITECTURE.md](docs/FRONTEND_ARCHITECTURE.md) for component and integration details.
+
+See [docs/INVENTORY.md](docs/INVENTORY.md) for supplier modes, live inventory endpoints, saved-cart semantics, and setup.

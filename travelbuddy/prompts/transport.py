@@ -12,7 +12,9 @@ Your expertise includes:
 
 You think in COMPLETE DOOR-TO-DOOR STRATEGIES, not individual rides. A good transport plan covers the whole journey: "Fly into Narita on the morning ANA flight, take the Narita Express into the city, get a Suica card on arrival, use the metro daily, Uber after midnight." You always consider what's most practical for the specific traveler, not what's cheapest in theory.
 
-You're honest about transport pain points — routes with bad connections, cities with confusing systems, unreliable services, or safety concerns after dark. You'd rather over-prepare a traveler than leave them stranded."""
+You're honest about transport pain points — routes with bad connections, cities with confusing systems, unreliable services, or safety concerns after dark. You'd rather over-prepare a traveler than leave them stranded.
+
+Important inventory boundary: prices found through web research are planning estimates. Never claim that a flight or ride is currently available, held, or booked. TravelBuddy's supplier API performs dated availability and quote checks."""
 
 
 def build_user_prompt(prefs_json: str, context_brief: str) -> str:
@@ -27,11 +29,13 @@ def build_user_prompt(prefs_json: str, context_brief: str) -> str:
 The traveler is starting from the ORIGIN listed in the preferences and going to the DESTINATION. Search the web for the best ways to make this journey AND get around once there. Research CURRENT options, prices, and practical tips.
 
 Recommend exactly 8 complete transport STRATEGY candidates (our system will rank them and keep the best 3). Each strategy must cover the FULL journey, door to door:
-1. Getting from the origin to the destination: compare realistic modes (flight, train, bus, car) with current price ranges and travel times — pick the best mode for this traveler's budget and dates and make it the backbone of the strategy
-2. Arrival transfer: airport/station to accommodation area
-3. Daily getting-around within the destination
-4. Options for reaching day-trip destinations if relevant
-5. Current apps, passes, and cards available
+1. Outbound transfer from the traveler's starting area to the departure airport/station
+2. Outbound flight or realistic intercity alternative from origin to destination
+3. Arrival transfer from the destination airport/station to the accommodation area
+4. Mirror those three legs for the return journey
+5. Daily getting-around within the destination, kept separate from the airport journey
+6. Options for reaching day-trip destinations if relevant
+7. Current apps, passes, and cards available
 
 Make the 8 strategies genuinely different (e.g. cheapest overall, fastest, most comfortable, best for the group, best value mix) — not the same plan eight times.
 
@@ -66,8 +70,16 @@ You MUST respond with valid JSON in exactly this format, with no other text befo
       "constraint_tags": [],
       "dietary_tags": [],
       "metadata": {{
-        "getting_there": "best mode from origin to destination with price and duration",
-        "arrival_transfer": "how to get from airport/station to accommodation area",
+        "outbound": {{
+          "home_to_airport": {{"mode": "ride or transit", "route": "starting area to departure airport", "timing": "when to leave", "duration": "estimate", "estimated_cost": "$X-$Y"}},
+          "flight": {{"mode": "flight/train/etc", "route": "origin hub to destination hub", "timing": "recommended window", "duration": "estimate", "estimated_cost": "$X-$Y", "carrier_hint": "carrier or route to check live"}},
+          "airport_to_hotel": {{"mode": "ride or transit", "route": "arrival airport to accommodation area", "timing": "after arrival", "duration": "estimate", "estimated_cost": "$X-$Y"}}
+        }},
+        "return": {{
+          "hotel_to_airport": {{"mode": "ride or transit", "route": "accommodation area to departure airport", "timing": "when to leave", "duration": "estimate", "estimated_cost": "$X-$Y"}},
+          "flight": {{"mode": "flight/train/etc", "route": "destination hub to origin hub", "timing": "recommended window", "duration": "estimate", "estimated_cost": "$X-$Y", "carrier_hint": "carrier or route to check live"}},
+          "airport_to_home": {{"mode": "ride or transit", "route": "arrival airport to starting area", "timing": "after arrival", "duration": "estimate", "estimated_cost": "$X-$Y"}}
+        }},
         "daily_transport": "primary mode for daily getting-around",
         "apps_to_download": ["app names"],
         "passes_or_cards": "specific pass/card name and where to buy it",

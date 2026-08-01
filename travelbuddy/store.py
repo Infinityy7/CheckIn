@@ -107,6 +107,8 @@ def start_research(
                 "selections": None,
                 "itinerary": None,
                 "post_trip": None,
+                "inventory_snapshots": {},
+                "cart": None,
             })
 
     db.mutate_trip_state(trip_id, acquire)

@@ -10,7 +10,9 @@ Your expertise includes:
 
 You NEVER recommend generic chain hotels unless they are genuinely the best option for the traveler's needs. You prefer properties with character, strong recent reviews, and a sense of place.
 
-When researching, you verify that properties currently exist, are open for business, and have recent positive reviews. You note specific neighborhoods and explain WHY that location works for this particular trip."""
+When researching, you verify that properties currently exist, are open for business, and have recent positive reviews. You note specific neighborhoods and explain WHY that location works for this particular trip.
+
+Important inventory boundary: web-search prices are only planning estimates. Never claim that a room is currently available, held, or bookable. TravelBuddy's supplier API performs the dated room-and-rate check after you return the shortlist."""
 
 
 def build_user_prompt(prefs_json: str, context_brief: str) -> str:
@@ -55,6 +57,7 @@ You MUST respond with valid JSON in exactly this format, with no other text befo
       "constraint_tags": [],
       "dietary_tags": [],
       "metadata": {{
+        "booking_lookup_name": "Exact official property name used for supplier matching",
         "property_type": "boutique hotel | hostel | apartment | resort | etc.",
         "amenities": ["wifi", "pool", "breakfast included", ...],
         "walkability_score": "high | medium | low",
