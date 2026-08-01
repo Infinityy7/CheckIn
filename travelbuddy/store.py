@@ -66,7 +66,18 @@ def set_context_brief(trip_id: str, brief: str, lease_id: str) -> None:
     db.mutate_trip_state(trip_id, update)
 
 
-def start_research(trip_id: str) -> str:
+def start_research(
+    trip_id: str,
+    *,
+    preserve_results: bool = False,
+    preserve_downstream: bool = False,
+) -> str:
+    """Acquire a research lease and prepare an idempotent run.
+
+    ``preserve_results`` provides a last-known-good shortlist while refreshed
+    categories arrive. ``preserve_downstream`` is only appropriate when a
+    partial run is filling missing categories and existing IDs are unchanged.
+    """
     now = datetime.now(timezone.utc)
     lease_id = str(uuid.uuid4())
 
@@ -82,17 +93,21 @@ def start_research(trip_id: str) -> str:
         )
         if lease_is_live:
             raise ResearchAlreadyRunning("Research is already running for this trip")
+        existing_results = list(state.get("research_results") or [])
         state.update({
             "research_in_progress": True,
             "research_started_at": now.isoformat(),
             "research_lease_id": lease_id,
-            "research_results": [],
+            "research_results": existing_results if preserve_results else [],
             "research_errors": [],
-            # A refreshed shortlist invalidates IDs from the previous run.
-            "selections": None,
-            "itinerary": None,
-            "post_trip": None,
         })
+        if not preserve_downstream:
+            # A full refreshed shortlist invalidates IDs from the previous run.
+            state.update({
+                "selections": None,
+                "itinerary": None,
+                "post_trip": None,
+            })
 
     db.mutate_trip_state(trip_id, acquire)
     return lease_id
@@ -118,13 +133,18 @@ def finish_research(trip_id: str, lease_id: str) -> None:
 def add_agent_result(trip_id: str, result: AgentResult, lease_id: str) -> None:
     payload = result.model_dump(mode="json")
 
-    def append(state: dict) -> None:
+    def upsert(state: dict) -> None:
         _require_lease(state, lease_id)
         results = list(state.get("research_results") or [])
-        results.append(payload)
+        for index, existing in enumerate(results):
+            if existing.get("agent_name") == result.agent_name:
+                results[index] = payload
+                break
+        else:
+            results.append(payload)
         state["research_results"] = results
 
-    db.mutate_trip_state(trip_id, append)
+    db.mutate_trip_state(trip_id, upsert)
 
 
 def add_research_error(trip_id: str, error: str, lease_id: str) -> None:

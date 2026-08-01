@@ -7,8 +7,16 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 
 import db
-from schemas import GroupType, TripPreferences
-from store import ResearchAlreadyRunning, create_trip, finish_research, get_trip, start_research
+from schemas import AgentResult, GroupType, Recommendation, TripPreferences
+from store import (
+    ResearchAlreadyRunning,
+    add_agent_result,
+    create_trip,
+    finish_research,
+    get_trip,
+    set_selections,
+    start_research,
+)
 
 
 def _trip(tmp_path):
@@ -27,6 +35,29 @@ def _trip(tmp_path):
         group_type=GroupType.COUPLE,
         num_travelers=2,
     ), "u1")
+
+
+def _agent_result(version: str) -> AgentResult:
+    return AgentResult(
+        agent_name="Activities Agent",
+        recommendations=[
+            Recommendation(
+                id=f"{version}-{rank}",
+                name=f"Activity {version}-{rank}",
+                category="activity",
+                description="A researched cultural activity.",
+                reasoning="Matches the saved profile.",
+                estimated_cost="$20-$40",
+                cost_min=20,
+                cost_max=40,
+                rating=4.6,
+                review_count=700,
+                location="Kyoto",
+                image_search_query="kyoto activity",
+            )
+            for rank in range(1, 4)
+        ],
+    )
 
 
 def test_live_research_lease_blocks_a_second_worker(tmp_path):
@@ -57,3 +88,42 @@ def test_stale_worker_cannot_release_a_new_lease(tmp_path):
 
     finish_research(trip.trip_id, new_lease)
     assert get_trip(trip.trip_id).research_in_progress is False
+
+
+def test_preserved_results_are_upserted_without_duplicates(tmp_path):
+    trip = _trip(tmp_path)
+    first_lease = start_research(trip.trip_id)
+    add_agent_result(trip.trip_id, _agent_result("old"), first_lease)
+    finish_research(trip.trip_id, first_lease)
+    set_selections(trip.trip_id, ["old-1"])
+
+    retry_lease = start_research(
+        trip.trip_id,
+        preserve_results=True,
+        preserve_downstream=True,
+    )
+    during_retry = get_trip(trip.trip_id)
+    assert during_retry.research_results[0].recommendations[0].id == "old-1"
+    assert during_retry.selections == ["old-1"]
+
+    add_agent_result(trip.trip_id, _agent_result("new"), retry_lease)
+    finish_research(trip.trip_id, retry_lease)
+    refreshed = get_trip(trip.trip_id)
+
+    assert len(refreshed.research_results) == 1
+    assert refreshed.research_results[0].recommendations[0].id == "new-1"
+
+
+def test_full_refresh_keeps_last_good_results_but_invalidates_selections(tmp_path):
+    trip = _trip(tmp_path)
+    first_lease = start_research(trip.trip_id)
+    add_agent_result(trip.trip_id, _agent_result("old"), first_lease)
+    finish_research(trip.trip_id, first_lease)
+    set_selections(trip.trip_id, ["old-1"])
+
+    refresh_lease = start_research(trip.trip_id, preserve_results=True)
+    refreshed = get_trip(trip.trip_id)
+
+    assert refreshed.research_results[0].recommendations[0].id == "old-1"
+    assert refreshed.selections is None
+    finish_research(trip.trip_id, refresh_lease)

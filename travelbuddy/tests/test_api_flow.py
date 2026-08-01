@@ -211,3 +211,134 @@ def test_validation_errors_are_readable():
     assert body["error"]["request_id"]
     assert body["error"]["details"]
     assert isinstance(body["detail"], str)
+
+
+def test_detailed_agent_health_requires_authentication():
+    response = TestClient(main.app).get("/api/health/agents")
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "UNAUTHORIZED"
+
+
+def test_partial_research_retry_runs_only_missing_category(tmp_path, monkeypatch):
+    db.DB_PATH = tmp_path / "partial-retry.db"
+    db.dispose_engine()
+    db.init_db()
+
+    context_calls = 0
+    agent_calls: list[list[str]] = []
+    categories = {
+        "Accommodation Agent": "hotel",
+        "Activities Agent": "activity",
+        "Restaurant Agent": "restaurant",
+        "Transport Agent": "transport",
+    }
+
+    async def fake_brief(*_args, **_kwargs):
+        nonlocal context_calls
+        context_calls += 1
+        return "A saved, reusable Kyoto context brief."
+
+    async def flaky_agents(*_args, agent_names=None, **_kwargs):
+        names = list(agent_names or categories)
+        agent_calls.append(names)
+        should_fail_restaurant = len(agent_calls) in {1, 3}
+        completed = 0
+        failed = 0
+        for name in names:
+            yield {"event": "agent_started", "agent": name}
+            if should_fail_restaurant and name == "Restaurant Agent":
+                failed += 1
+                yield {
+                    "event": "agent_failed",
+                    "agent": name,
+                    "error": "Restaurant Agent could not finish this search. You can retry safely.",
+                    "code": "AGENT_FAILED",
+                    "retryable": True,
+                }
+            else:
+                completed += 1
+                yield {
+                    "event": "agent_completed",
+                    "agent": name,
+                    "results": [
+                        recommendation(categories[name], rank).model_dump()
+                        for rank in range(1, 4)
+                    ],
+                }
+        yield {
+            "event": "all_complete",
+            "completed": completed,
+            "failed": failed,
+            "status": "partial" if failed and completed else "complete",
+        }
+
+    monkeypatch.setattr(main, "generate_context_brief", fake_brief)
+    monkeypatch.setattr(main, "run_agents_streaming", flaky_agents)
+
+    client = TestClient(main.app, raise_server_exceptions=False)
+    registered = client.post(
+        "/api/auth/register",
+        json={"email": "partial@example.com", "password": "safe-password-1"},
+    )
+    headers = {"Authorization": f"Bearer {registered.json()['token']}"}
+    user_id = db.get_user_by_email("partial@example.com")["user_id"]
+    profiles.save_sketch(
+        user_id,
+        "# Character Sketch\n\nA balanced traveler who likes local culture.\n",
+        ["Local culture"],
+    )
+    trip = client.post(
+        "/api/trip/preferences",
+        headers=headers,
+        json={
+            "destination": "Kyoto",
+            "origin": "Mumbai",
+            "start_date": "2026-10-12",
+            "end_date": "2026-10-18",
+            "budget_amount": 3200,
+            "currency": "USD",
+            "vibes": ["culture", "food"],
+            "group_type": "couple",
+            "num_travelers": 2,
+            "cotravellers": [],
+        },
+    )
+    trip_id = trip.json()["trip_id"]
+
+    first = client.post(f"/api/trip/{trip_id}/research", headers=headers)
+    assert first.status_code == 200
+    partial = client.get(f"/api/trip/{trip_id}", headers=headers).json()
+    assert len(partial["research_results"]) == 3
+    assert len(partial["research_errors"]) == 1
+
+    retried = client.post(f"/api/trip/{trip_id}/research", headers=headers)
+    assert retried.status_code == 200
+    complete = client.get(f"/api/trip/{trip_id}", headers=headers).json()
+
+    assert agent_calls[1] == ["Restaurant Agent"]
+    assert context_calls == 1
+    assert len(complete["research_results"]) == 4
+    assert len({result["agent_name"] for result in complete["research_results"]}) == 4
+    assert complete["research_errors"] == []
+
+    # A later full refresh keeps the old Restaurant cards if that agent fails,
+    # but the following retry must still target only that failed category.
+    failed_refresh = client.post(f"/api/trip/{trip_id}/research", headers=headers)
+    assert failed_refresh.status_code == 200
+    stale = client.get(f"/api/trip/{trip_id}", headers=headers).json()
+    assert len(stale["research_results"]) == 4
+    assert len(stale["research_errors"]) == 1
+
+    retry_failed_refresh = client.post(f"/api/trip/{trip_id}/research", headers=headers)
+    assert retry_failed_refresh.status_code == 200
+    assert agent_calls[2] == list(categories)
+    assert agent_calls[3] == ["Restaurant Agent"]
+    assert context_calls == 2
+
+    def broken_profile(_user_id):
+        raise RuntimeError("profile storage unavailable")
+
+    monkeypatch.setattr(profiles, "load_sketch", broken_profile)
+    failed_before_stream = client.post(f"/api/trip/{trip_id}/research", headers=headers)
+    assert failed_before_stream.status_code == 500
+    assert client.get(f"/api/trip/{trip_id}", headers=headers).json()["research_in_progress"] is False

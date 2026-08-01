@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -19,9 +20,10 @@ import auth
 import api_errors
 import db
 import profiles
-from config import ALLOWED_ORIGINS, LOG_LEVEL
+from config import ALLOWED_ORIGINS, LOG_LEVEL, SSE_HEARTBEAT_SECONDS
 from itinerary import generate_itinerary
-from orchestrator import generate_context_brief, run_agents_streaming
+from llm_client import get_llm_health, is_fatal_error
+from orchestrator import ALL_AGENT_NAMES, generate_context_brief, run_agents_streaming
 from personalization import (
     MAX_TAG_BATCH_DELTA,
     apply_weight_adjustments,
@@ -176,6 +178,12 @@ def _post_trip_state(state: TripState, user_id: str) -> PostTripState:
 async def health() -> dict:
     """Basic health check."""
     return {"status": "ok"}
+
+
+@app.get("/api/health/agents")
+async def agent_health(_user_id: str = Depends(auth.get_current_user)) -> dict:
+    """Prompt-free circuit and latency state for operational monitoring."""
+    return get_llm_health()
 
 
 @app.post("/api/auth/register")
@@ -381,12 +389,24 @@ async def research_trip(
     does not have to wait for all 4 to complete.
     """
     state = _get_owned_trip(trip_id, user_id)
-    try:
-        # Atomically acquires a renewable-enough lease and clears stale output.
-        research_lease_id = start_research(trip_id)
-    except ResearchAlreadyRunning as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
+    failed_agents = {
+        name
+        for name in ALL_AGENT_NAMES
+        if any(
+            error.startswith(name)
+            for error in (state.research_errors or [])
+        )
+    }
+    completed_agents = {
+        result.agent_name for result in (state.research_results or [])
+        if result.agent_name in ALL_AGENT_NAMES
+    }.difference(failed_agents)
+    resume_partial = 0 < len(completed_agents) < len(ALL_AGENT_NAMES)
+    target_agents = (
+        [name for name in ALL_AGENT_NAMES if name not in completed_agents]
+        if resume_partial
+        else list(ALL_AGENT_NAMES)
+    )
     # taste profile: prose goes into the brief (light aim for the web
     # search), taste vectors go into the ranker (the heavy lifting)
     raw_sketch = profiles.load_sketch(user_id)
@@ -407,19 +427,44 @@ async def research_trip(
         if cot_taste:
             cotraveller_tastes.append(cot_taste)
 
+    try:
+        # Acquire only after profile preparation, so a profile/database error
+        # cannot leave a lease stranded before the stream cleanup exists.
+        research_lease_id = start_research(
+            trip_id,
+            preserve_results=True,
+            preserve_downstream=resume_partial,
+        )
+    except ResearchAlreadyRunning as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     async def event_stream():
         try:
-            # Generate context brief first
-            context_brief = await generate_context_brief(
-                state.preferences, brief_sketch, cotraveller_sketches
-            )
-            set_context_brief(trip_id, context_brief, research_lease_id)
+            yield _sse({
+                "event": "research_started",
+                "resumed": resume_partial,
+                "agents": target_agents,
+            })
+
+            # Reusing the brief makes a missing-category retry both faster and
+            # less expensive. New/full runs have a deterministic AI fallback.
+            if resume_partial and state.context_brief:
+                context_brief = state.context_brief
+            else:
+                context_brief = await generate_context_brief(
+                    state.preferences, brief_sketch, cotraveller_sketches
+                )
+                set_context_brief(trip_id, context_brief, research_lease_id)
 
             yield _sse({"event": "context_brief_generated", "brief": context_brief})
 
             # Stream agent results as each completes
             async for event in run_agents_streaming(
-                state.preferences, context_brief, user_taste, cotraveller_tastes
+                state.preferences,
+                context_brief,
+                user_taste,
+                cotraveller_tastes,
+                agent_names=target_agents,
             ):
                 if event["event"] == "agent_completed":
                     agent_result = AgentResult(
@@ -430,7 +475,11 @@ async def research_trip(
                 elif event["event"] == "agent_failed":
                     add_research_error(trip_id, event["error"], research_lease_id)
                 elif event["event"] == "all_complete":
-                    event["trip_id"] = trip_id  # orchestrator already sends this one
+                    event["trip_id"] = trip_id
+                    latest = get_trip(trip_id)
+                    event["available_categories"] = len(
+                        latest.research_results or []
+                    ) if latest else 0
 
                 yield _sse(event)
         except Exception as exc:
@@ -438,7 +487,7 @@ async def research_trip(
             logger.error(
                 "[%s] Research stream failed: %s",
                 request.state.request_id,
-                exc,
+                type(exc).__name__,
                 exc_info=True,
             )
             yield _sse(api_errors.stream_problem(
@@ -449,6 +498,7 @@ async def research_trip(
                     "Research stopped before every category finished. "
                     "Any completed results are still available, and you can retry safely."
                 ),
+                retryable=not is_fatal_error(exc),
             ))
         finally:
             finish_research(trip_id, research_lease_id)
@@ -525,8 +575,18 @@ async def generate_trip_itinerary(
     async def event_stream():
         yield _sse({"event": "itinerary_started", "trip_id": trip_id, "selection_count": len(selected)})
 
+        task = asyncio.create_task(
+            generate_itinerary(state.preferences, context_brief, selected)
+        )
         try:
-            itinerary = await generate_itinerary(state.preferences, context_brief, selected)
+            while not task.done():
+                done, _ = await asyncio.wait(
+                    {task},
+                    timeout=SSE_HEARTBEAT_SECONDS,
+                )
+                if not done:
+                    yield _sse({"event": "heartbeat"})
+            itinerary = await task
             set_itinerary(trip_id, itinerary)
             yield _sse({
                 "event": "itinerary_complete",
@@ -536,7 +596,7 @@ async def generate_trip_itinerary(
             logger.error(
                 "[%s] Itinerary generation failed: %s",
                 request.state.request_id,
-                exc,
+                type(exc).__name__,
                 exc_info=True,
             )
             yield _sse(api_errors.stream_problem(
@@ -547,7 +607,12 @@ async def generate_trip_itinerary(
                     "The itinerary could not be finished. Your selections are saved, "
                     "so it is safe to try again."
                 ),
+                retryable=not is_fatal_error(exc),
             ))
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
 
     return StreamingResponse(
         event_stream(),

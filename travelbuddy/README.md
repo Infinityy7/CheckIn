@@ -117,7 +117,10 @@ See [docs/PERSONALIZATION.md](docs/PERSONALIZATION.md) for the questionnaire, ra
 
 - Failed JSON responses use one stable error shape with a safe message, code, retry flag, and request ID.
 - `X-Request-ID` is returned on every API response and appears in server logs for support tracing.
-- Research categories fail independently; completed results stay visible and failed categories can be retried.
+- Research categories fail independently; completed results stay visible and a retry runs only missing categories.
+- SDK retries are disabled in favor of one bounded model-failover policy with deadlines, jitter, bulkheads, and circuit breakers.
+- Context generation has a deterministic fallback, and full refreshes keep last-known-good cards until replacements arrive.
+- Authenticated `GET /api/health/agents` exposes sanitized latency, token, failure, and circuit metrics for monitoring.
 - Provider details stay in internal logs rather than leaking into the UI.
 - Direct Python and frontend dependencies are locked to the tested versions in `requirements.txt`, `requirements-dev.txt`, and `frontend/package-lock.json`.
 

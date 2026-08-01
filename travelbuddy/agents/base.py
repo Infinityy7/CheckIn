@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from abc import ABC, abstractmethod
 
 from config import MAX_AGENT_RETRIES
-from llm_client import generate_text, is_fatal_error, parse_json_text
+from llm_client import LLMCapacityError, generate_text, is_fatal_error, parse_json_text
 from ranking import rank_recommendations
 from schemas import AgentResult, Recommendation, TripPreferences
 
@@ -28,8 +27,7 @@ RETRY_CORRECTION = (
 
 
 class BaseAgent(ABC):
-    """Subclasses just supply a name and prompts; this class does the rest
-    (Gemini call, parsing, validation, ranking, retries)."""
+    """Subclasses supply prompts; this class owns validation and ranking."""
 
     @property
     @abstractmethod
@@ -72,14 +70,24 @@ class BaseAgent(ABC):
                     system_instruction=self.system_prompt,
                     use_search=True,
                     temperature=0.3,
+                    prefer_fallback=attempt > 1,
+                    json_mode=True,
+                    workload="research",
+                    operation=self.agent_name,
                 )
                 candidates = self._parse_and_validate(raw_text)
             except Exception as exc:
+                if isinstance(exc, LLMCapacityError):
+                    raise  # both configured models share this local bulkhead
                 if is_fatal_error(exc):
                     raise  # bad API key etc, no point retrying
                 last_error = exc
-                logger.warning("[%s] attempt %d failed: %s", self.agent_name, attempt, exc)
-                await asyncio.sleep(1)
+                logger.warning(
+                    "[%s] attempt %d failed: %s",
+                    self.agent_name,
+                    attempt,
+                    type(exc).__name__,
+                )
                 continue
 
             ranked = rank_recommendations(candidates, prefs, user_taste, cotraveller_tastes)
