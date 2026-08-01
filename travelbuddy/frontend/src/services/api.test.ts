@@ -79,4 +79,27 @@ describe('ApiError', () => {
       body: JSON.stringify({ trip_id: 'trip-42', recommendation_id: 'restaurant-7', sentiment: 'dislike' }),
     }))
   })
+
+  it('rejects a progress stream that closes without a terminal event', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
+      'data: {"event":"agent_started","agent":"Activities Agent"}\n\n',
+      { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+    )))
+
+    await expect(api.research('trip-42', () => undefined)).rejects.toMatchObject({
+      code: 'STREAM_INTERRUPTED',
+      retryable: true,
+    })
+  })
+
+  it('accepts a stream only after its terminal event arrives', async () => {
+    const events: string[] = []
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
+      'data: {"event":"heartbeat"}\n\ndata: {"event":"all_complete"}\n\n',
+      { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+    )))
+
+    await expect(api.research('trip-42', (event) => events.push(event.event))).resolves.toBeUndefined()
+    expect(events).toEqual(['heartbeat', 'all_complete'])
+  })
 })

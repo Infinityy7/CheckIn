@@ -129,6 +129,49 @@ test('ranked recommendations select and generate a final itinerary', async ({ pa
   await page.screenshot({ path: `${shots}/07-final-itinerary.png`, fullPage: true })
 })
 
+test('partial retry keeps successful cards and merges the missing category', async ({ page }) => {
+  await session(page, true)
+  let refreshed = false
+  let releaseResearch!: () => void
+  const researchGate = new Promise<void>((resolve) => { releaseResearch = resolve })
+  const partialCategories = categories.filter((category) => category !== 'restaurant')
+  const state = () => ({
+    trip_id: 'trip-e2e', preferences,
+    research_results: (refreshed ? categories : partialCategories).map((category) => ({
+      agent_name: category === 'hotel' ? 'Accommodation Agent' : category === 'activity' ? 'Activities Agent' : category === 'restaurant' ? 'Restaurant Agent' : 'Transport Agent',
+      recommendations: recommendations.filter((item) => item.category === category),
+    })),
+    research_errors: refreshed ? [] : ['Restaurant Agent could not finish this search. You can retry safely.'],
+    selections: [],
+  })
+  await page.route('**/api/trip/trip-e2e/research', async (route) => {
+    await researchGate
+    refreshed = true
+    return route.fulfill({
+      status: 200,
+      contentType: 'text/event-stream',
+      body: [
+        { event: 'research_started', resumed: true, agents: ['Restaurant Agent'] },
+        { event: 'agent_started', agent: 'Restaurant Agent' },
+        { event: 'agent_completed', agent: 'Restaurant Agent', results: recommendations.filter((item) => item.category === 'restaurant') },
+        { event: 'all_complete', completed: 1, failed: 0, status: 'complete' },
+      ].map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''),
+    })
+  })
+  await page.route('**/api/trip/trip-e2e', (route) => json(route, state()))
+
+  await page.goto('/')
+  await expect(page.getByText('Shinkansen + Local Rail')).toBeVisible()
+  await page.getByRole('button', { name: 'Retry research' }).click()
+  await expect(page.getByText('Research in motion')).toBeVisible()
+  await expect(page.getByText('Shinkansen + Local Rail')).toBeVisible()
+
+  releaseResearch()
+  await page.getByRole('tab', { name: /Food/ }).click()
+  await expect(page.getByText('Monk Kyoto')).toBeVisible()
+  await expect(page.getByText('Recommendations ready')).toBeVisible()
+})
+
 test('tablet and mobile layouts remain usable', async ({ page }) => {
   await session(page, true)
   await page.setViewportSize({ width: 820, height: 1180 }); await page.goto('/'); await expect(page.getByText('The shortlist')).toBeVisible(); await page.screenshot({ path: `${shots}/08-workspace-tablet.png`, fullPage: true })

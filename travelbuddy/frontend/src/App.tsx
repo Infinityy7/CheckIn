@@ -85,8 +85,11 @@ export default function App() {
 
   async function runResearch(tripId = trip?.trip_id) {
     if (!tripId) return
-    setResearching(true); setError(''); setRecommendations([]); setAgents(initialAgents)
-    setSelections([]); setItinerary(null)
+    const retryingPartial = recommendations.length > 0 && Object.values(agents).some((status) => status === 'failed')
+    setResearching(true); setError('')
+    // Keep last-known-good cards visible while replacements are in flight.
+    // Missing-category retries keep existing recommendation IDs intact.
+    if (!retryingPartial) { setSelections([]); setItinerary(null) }
     try {
       await api.research(tripId, (event: StreamEvent) => {
         if (event.event === 'agent_started' && event.agent) setAgents((current) => ({ ...current, [event.agent!]: 'working' }))
@@ -94,7 +97,7 @@ export default function App() {
         if (event.event === 'agent_failed' && event.agent) setAgents((current) => ({ ...current, [event.agent!]: 'failed' }))
         if (event.event === 'error') setError(streamErrorMessage(event, 'Research failed.'))
       })
-      setTrip(await api.trip(tripId))
+      hydrateTrip(await api.trip(tripId))
     } catch (reason) { setError(userErrorMessage(reason, 'The research crew got interrupted.')) }
     finally { setResearching(false) }
   }

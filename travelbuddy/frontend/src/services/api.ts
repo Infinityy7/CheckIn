@@ -90,7 +90,33 @@ function parseStreamEvent(line: string): StreamEvent {
   }
 }
 
-async function stream(path: string, onEvent: (event: StreamEvent) => void): Promise<void> {
+const STREAM_IDLE_TIMEOUT_MS = 45_000
+
+async function readStreamChunk(reader: ReadableStreamDefaultReader<Uint8Array>) {
+  let timeout = 0
+  try {
+    return await Promise.race([
+      reader.read(),
+      new Promise<never>((_, reject) => {
+        timeout = window.setTimeout(() => reject(new ApiError(
+          'The progress stream went quiet. Your completed work is safe to retry.',
+          0, 'STREAM_TIMEOUT', undefined, true,
+        )), STREAM_IDLE_TIMEOUT_MS)
+      }),
+    ])
+  } catch (reason) {
+    await reader.cancel().catch(() => undefined)
+    throw reason
+  } finally {
+    window.clearTimeout(timeout)
+  }
+}
+
+async function stream(
+  path: string,
+  onEvent: (event: StreamEvent) => void,
+  terminalEvents: ReadonlySet<string>,
+): Promise<void> {
   const token = localStorage.getItem(TOKEN_KEY)
   let response: Response
   try {
@@ -107,20 +133,32 @@ async function stream(path: string, onEvent: (event: StreamEvent) => void): Prom
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
+  let terminalSeen = false
+  const dispatch = (line: string) => {
+    const event = parseStreamEvent(line)
+    onEvent(event)
+    if (terminalEvents.has(event.event)) terminalSeen = true
+  }
   while (true) {
-    const { done, value } = await reader.read()
+    const { done, value } = await readStreamChunk(reader)
     if (done) break
     buffer += decoder.decode(value, { stream: true })
     const chunks = buffer.split('\n\n')
     buffer = chunks.pop() ?? ''
     for (const chunk of chunks) {
       const line = chunk.split('\n').find((entry) => entry.startsWith('data: '))
-      if (line) onEvent(parseStreamEvent(line))
+      if (line) dispatch(line)
     }
   }
   buffer += decoder.decode()
   const finalLine = buffer.split('\n').find((entry) => entry.startsWith('data: '))
-  if (finalLine) onEvent(parseStreamEvent(finalLine))
+  if (finalLine) dispatch(finalLine)
+  if (!terminalSeen) {
+    throw new ApiError(
+      'The progress stream ended early. Your completed work is safe to retry.',
+      response.status, 'STREAM_INTERRUPTED', response.headers.get('X-Request-ID') ?? undefined, true,
+    )
+  }
 }
 
 export const api = {
@@ -163,9 +201,13 @@ export const api = {
   submitPostTripFeedback: (id: string, overallRating: 1 | 2 | 3 | 4 | 5) => request<PostTripFeedbackResponse>(`/api/trip/${encodeURIComponent(id)}/post-trip-feedback`, {
     method: 'PUT', body: JSON.stringify({ overall_rating: overallRating }),
   }),
-  research: (id: string, onEvent: (event: StreamEvent) => void) => stream(`/api/trip/${id}/research`, onEvent),
+  research: (id: string, onEvent: (event: StreamEvent) => void) => stream(
+    `/api/trip/${id}/research`, onEvent, new Set(['all_complete', 'error']),
+  ),
   select: (id: string, selections: string[]) => request(`/api/trip/${id}/select`, {
     method: 'POST', body: JSON.stringify({ selections }),
   }),
-  itinerary: (id: string, onEvent: (event: StreamEvent) => void) => stream(`/api/trip/${id}/itinerary`, onEvent),
+  itinerary: (id: string, onEvent: (event: StreamEvent) => void) => stream(
+    `/api/trip/${id}/itinerary`, onEvent, new Set(['itinerary_complete', 'itinerary_failed']),
+  ),
 }

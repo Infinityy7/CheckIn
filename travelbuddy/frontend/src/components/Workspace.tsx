@@ -74,7 +74,7 @@ export function Workspace({ destination, preferences, profile, recommendations, 
       <div className="agent-tavi"><Mascot state={researching ? 'thinking' : failed ? 'confused' : 'excited'} size="sm" /><p>{researching ? 'I’m cross-checking value against your pace.' : failed ? 'I kept the successful results. We can retry the missing route.' : 'Your shortlist is ready to shape.'}</p></div>
     </section>
 
-    {failed > 0 && !researching && <section className="partial-results" role="status"><AlertTriangle /><div><strong>{failed} research {failed === 1 ? 'category needs' : 'categories need'} another try</strong><p>Your completed recommendations are still here. Retrying safely refreshes the full shortlist.</p></div><Button variant="secondary" onClick={onAlternatives}><RefreshCw /> Retry research</Button></section>}
+    {failed > 0 && !researching && <section className="partial-results" role="status"><AlertTriangle /><div><strong>{failed} research {failed === 1 ? 'category needs' : 'categories need'} another try</strong><p>Your completed recommendations are still here. Retrying reruns only the missing categories.</p></div><Button variant="secondary" onClick={onAlternatives}><RefreshCw /> Retry research</Button></section>}
 
     <div className="workspace-layout">
       <section className="recommendations-panel">
