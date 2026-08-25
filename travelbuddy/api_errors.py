@@ -131,7 +131,7 @@ async def unexpected_exception_handler(request: Request, exc: Exception) -> JSON
         exc,
         exc_info=True,
     )
-    message = "TravelBuddy hit an unexpected problem. Your saved work is still safe."
+    message = "CheckIn hit an unexpected problem. Your saved work is still safe."
     return JSONResponse(
         status_code=500,
         content=problem(

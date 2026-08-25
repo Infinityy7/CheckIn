@@ -1,4 +1,4 @@
-"""Alembic environment for TravelBuddy."""
+"""Alembic environment for CheckIn."""
 
 from __future__ import annotations
 

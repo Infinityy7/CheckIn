@@ -300,7 +300,7 @@ class InventoryService:
                 title=recommendation.name,
                 subtitle=recommendation.estimated_cost,
                 status=CartItemState.SAVED,
-                source="TravelBuddy recommendation",
+                source="CheckIn recommendation",
                 source_mode=SourceMode.UNAVAILABLE,
                 is_live=False,
                 added_at=now,

@@ -76,7 +76,7 @@ async function request<T>(path: string, init: RequestInit = {}, timeoutMs = JSON
     if (reason instanceof DOMException && reason.name === 'AbortError') {
       throw new ApiError('The server took too long to respond. It is safe to try again.', 0, 'REQUEST_TIMEOUT', undefined, true)
     }
-    throw new ApiError('TravelBuddy could not reach the server. Check your connection and try again.', 0, 'NETWORK_ERROR', undefined, true)
+    throw new ApiError('CheckIn could not reach the server. Check your connection and try again.', 0, 'NETWORK_ERROR', undefined, true)
   } finally {
     window.clearTimeout(timeout)
   }
@@ -86,7 +86,7 @@ function parseStreamEvent(line: string): StreamEvent {
   try {
     return JSON.parse(line.slice(6)) as StreamEvent
   } catch {
-    throw new ApiError('TravelBuddy received an unreadable progress update. It is safe to retry.', 0, 'INVALID_STREAM', undefined, true)
+    throw new ApiError('CheckIn received an unreadable progress update. It is safe to retry.', 0, 'INVALID_STREAM', undefined, true)
   }
 }
 
@@ -125,7 +125,7 @@ async function stream(
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
   } catch {
-    throw new ApiError('TravelBuddy could not reach the research server. Check your connection and try again.', 0, 'NETWORK_ERROR', undefined, true)
+    throw new ApiError('CheckIn could not reach the research server. Check your connection and try again.', 0, 'NETWORK_ERROR', undefined, true)
   }
   if (!response.ok) throw await responseError(response, 'The research crew could not start.')
   if (!response.body) throw new ApiError('The server did not open a progress stream. It is safe to retry.', response.status, 'STREAM_UNAVAILABLE', response.headers.get('X-Request-ID') ?? undefined, true)

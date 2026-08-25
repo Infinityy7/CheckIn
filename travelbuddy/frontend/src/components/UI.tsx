@@ -3,7 +3,7 @@ import { AlertTriangle, Check, LoaderCircle, X } from 'lucide-react'
 import { Mascot } from './Mascot'
 
 export function Brand() {
-  return <div className="brand"><span className="brand__mark">TB</span><span>TravelBuddy</span></div>
+  return <div className="brand"><span className="brand__mark">CI</span><span>CheckIn</span></div>
 }
 
 export function Button({ children, variant = 'primary', className = '', ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'secondary' | 'quiet' | 'danger' }) {

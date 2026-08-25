@@ -5,6 +5,7 @@ travelbuddy/data/
 *.pyc
 .env
 .claude-flow/
+.swarm/
 .pytest_cache/
 node_modules/
 test-results/

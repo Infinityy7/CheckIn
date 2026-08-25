@@ -1,6 +1,6 @@
-# TravelBuddy
+# CheckIn
 
-TravelBuddy is an AI travel command center. Four specialist agents research transportation, accommodation, activities, and food in parallel; a profile-aware ranker returns the top three choices per category; the selected options become a day-by-day itinerary.
+CheckIn is an AI travel command center. Four specialist agents research transportation, accommodation, activities, and food in parallel; a profile-aware ranker returns the top three choices per category; the selected options become a day-by-day itinerary.
 
 The frontend is React 19 + TypeScript + Vite and is served by the existing FastAPI application. The original backend pipeline remains intact.
 
@@ -116,7 +116,7 @@ The legacy `GET /api/profile` and `/api/profile/chat` contracts remain available
 | `POST` | `/api/trip/{id}/cart/revalidate` | Recheck price and availability with the supplier |
 
 The saved cart is **not a reservation**. Its default 60-minute timer only
-controls how long TravelBuddy keeps the shortlist. Supplier quote and hold
+controls how long CheckIn keeps the shortlist. Supplier quote and hold
 expiries are shown separately. Payment and booking are not implemented.
 
 ## Quality checks

@@ -18,7 +18,7 @@ export function ItineraryView({ itinerary, preferences, postTrip, onBack, onRate
   }
   return <main className="itinerary page-stage">
     <section className="itinerary-cover">
-      <div className="itinerary-cover__stamp"><span>TRAVELBUDDY</span><b>FINAL ROUTE</b></div>
+      <div className="itinerary-cover__stamp"><span>CHECKIN</span><b>FINAL ROUTE</b></div>
       <div><span className="eyebrow">{preferences.start_date} — {preferences.end_date}</span><h1>{plan.trip_title}</h1><p>{plan.trip_summary}</p><div className="itinerary-cover__meta"><span><CalendarDays /> {plan.days.length} days</span><span><MapPin /> {preferences.destination}</span><span>{preferences.currency} {preferences.budget_amount.toLocaleString()} budget</span></div></div>
       <div className="itinerary-cover__mascot"><Mascot state="celebrating" size="lg" /><p>Route checked. Breathing room included.</p></div>
     </section>

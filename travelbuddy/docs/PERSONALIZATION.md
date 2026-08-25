@@ -1,6 +1,6 @@
 # Personalization architecture
 
-TravelBuddy keeps discovery and ranking separate:
+CheckIn keeps discovery and ranking separate:
 
 1. `character.md` is concise natural-language context. It is sent into the existing context-brief/search flow.
 2. Profile weights are validated JSON stored in PostgreSQL JSONB. Only this structured data is scored or learned.

@@ -644,7 +644,7 @@ def test_demo_provider_is_explicitly_non_live_across_inventory_and_quotes():
 
     hotel, flight, hotel_quote, flight_quote = run(scenario())
 
-    assert provider.name == "travelbuddy-demo"
+    assert provider.name == "checkin-demo"
     assert provider.source_mode == SourceMode.DEMO
     assert provider.is_live is False
     assert hotel.source_mode == SourceMode.DEMO

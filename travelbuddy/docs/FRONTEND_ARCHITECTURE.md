@@ -31,7 +31,7 @@ PostgreSQL stores a versioned `character_md` sketch and structured JSONB weights
 
 The visual system uses warm paper, deep ink, moss, terracotta, brass, and route-blue tokens; Newsreader provides editorial display type and Inter handles interface text. Map contours, route markings, stamps, and restrained spatial depth replace generic dashboard patterns. Motion is CSS-only and disabled through `prefers-reduced-motion`.
 
-The editable Figma foundation file is [TravelBuddy — Mascot Frontend Redesign](https://www.figma.com/design/aYWmhyvkno6LqsfWCUIZxa). It contains 64 variables, 28 semantic color aliases, 11 typography styles, and 3 depth styles. Additional Figma page generation was blocked by the authenticated Starter plan MCP quota; the final coded screens and checked-in screenshots are the detailed visual reference.
+The editable Figma foundation file is [CheckIn — Mascot Frontend Redesign](https://www.figma.com/design/aYWmhyvkno6LqsfWCUIZxa). It contains 64 variables, 28 semantic color aliases, 11 typography styles, and 3 depth styles. Additional Figma page generation was blocked by the authenticated Starter plan MCP quota; the final coded screens and checked-in screenshots are the detailed visual reference.
 
 ## Accessibility and responsive behavior
 

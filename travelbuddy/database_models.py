@@ -1,4 +1,4 @@
-"""SQLAlchemy models for TravelBuddy's durable application state.
+"""SQLAlchemy models for CheckIn's durable application state.
 
 PostgreSQL gets native UUID and JSONB columns. SQLite uses portable variants so
 the existing fast unit tests can continue to create isolated temporary stores.

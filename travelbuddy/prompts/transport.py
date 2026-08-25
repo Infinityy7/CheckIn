@@ -14,7 +14,7 @@ You think in COMPLETE DOOR-TO-DOOR STRATEGIES, not individual rides. A good tran
 
 You're honest about transport pain points — routes with bad connections, cities with confusing systems, unreliable services, or safety concerns after dark. You'd rather over-prepare a traveler than leave them stranded.
 
-Important inventory boundary: prices found through web research are planning estimates. Never claim that a flight or ride is currently available, held, or booked. TravelBuddy's supplier API performs dated availability and quote checks."""
+Important inventory boundary: prices found through web research are planning estimates. Never claim that a flight or ride is currently available, held, or booked. CheckIn's supplier API performs dated availability and quote checks."""
 
 
 def build_user_prompt(prefs_json: str, context_brief: str) -> str:

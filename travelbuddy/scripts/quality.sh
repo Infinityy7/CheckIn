@@ -165,7 +165,7 @@ for name in "${FAILED[@]}"; do printf '    - %s\n' "$name"; done
 printf '  Artifacts: %s\n' "$ARTIFACTS_DIR"
 
 {
-  printf '# TravelBuddy quality summary\n\n'
+  printf '# CheckIn quality summary\n\n'
   printf -- '- Passed: **%s**\n' "${#PASSED[@]}"
   printf -- '- Failed: **%s**\n\n' "${#FAILED[@]}"
   if [[ ${#PASSED[@]} -gt 0 ]]; then

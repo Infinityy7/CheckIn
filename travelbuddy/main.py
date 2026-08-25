@@ -1,4 +1,4 @@
-"""TravelBuddy — AI-powered travel planning API."""
+"""CheckIn — AI-powered travel planning API."""
 
 from __future__ import annotations
 
@@ -94,7 +94,7 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(
-    title="TravelBuddy",
+    title="CheckIn",
     description="AI-powered travel planning with specialized research agents",
     version="0.3.0",
     lifespan=lifespan,

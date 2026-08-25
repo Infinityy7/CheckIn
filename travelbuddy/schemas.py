@@ -1,4 +1,4 @@
-"""Pydantic models for all TravelBuddy data structures."""
+"""Pydantic models for all CheckIn data structures."""
 
 from __future__ import annotations
 

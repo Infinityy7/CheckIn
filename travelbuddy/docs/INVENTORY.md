@@ -1,6 +1,6 @@
 # Live inventory and saved cart
 
-TravelBuddy can enrich AI recommendations with dated hotel room rates and
+CheckIn can enrich AI recommendations with dated hotel room rates and
 flight offers from a supplier. The recommendation pipeline still decides
 *what* suits the traveler; the inventory layer checks *what is available now*
 and normalizes supplier responses for the frontend.
@@ -61,7 +61,7 @@ CART_TTL_MINUTES=60
 The saved-cart timer is separate from supplier quote and hold timers. A cart
 may remain visible after a supplier quote expires; its price must then be
 revalidated. If a supplier explicitly returns a hold, the UI shows that exact
-hold expiry independently. TravelBuddy does not invent a one-hour reservation.
+hold expiry independently. CheckIn does not invent a one-hour reservation.
 
 ## Local setup
 

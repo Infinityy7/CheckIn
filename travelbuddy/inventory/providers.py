@@ -127,7 +127,7 @@ def _utc_now() -> datetime:
 class DemoProvider:
     """Deterministic opt-in sample inventory. It never claims to be live."""
 
-    name = "travelbuddy-demo"
+    name = "checkin-demo"
     source_mode = SourceMode.DEMO
     is_live = False
 

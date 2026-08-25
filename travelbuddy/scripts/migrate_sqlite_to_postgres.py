@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Import the legacy TravelBuddy SQLite users/profiles into PostgreSQL.
+"""Import the legacy CheckIn SQLite users/profiles into PostgreSQL.
 
 Run Alembic first. The import is transactional and idempotent; rerunning it
 updates the same profile keys without creating duplicates.

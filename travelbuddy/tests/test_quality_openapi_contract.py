@@ -14,7 +14,7 @@ def test_openapi_operations_are_unique_and_document_success_responses():
     document = main.app.openapi()
     operation_ids: list[str] = []
 
-    assert document["info"]["title"] == "TravelBuddy"
+    assert document["info"]["title"] == "CheckIn"
     assert document["paths"]["/api/health"]["get"]
     for path, path_item in document["paths"].items():
         assert path.startswith("/api/"), f"Unexpected public route in API contract: {path}"
