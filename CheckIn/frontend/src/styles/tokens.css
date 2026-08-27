@@ -1,0 +1,147 @@
+/* Waymark design tokens. Every color in redesigned CSS comes from here. */
+:root {
+  color-scheme: light;
+  --serif: Newsreader, 'Iowan Old Style', Georgia, serif;
+  --sans: Inter, ui-sans-serif, system-ui, sans-serif;
+
+  --bg: #faf6ee;
+  --bg-tint: #f3ecdf;
+  --surface: #fffdf8;
+  --surface-2: #f6f0e4;
+  --panel: #101b16;
+  --panel-ink: #f2ede1;
+  --panel-muted: rgb(242 237 225 / .62);
+  --panel-line: rgb(242 237 225 / .16);
+  --line: #e6dccc;
+  --line-strong: #cbbca4;
+  --ink: #1a2420;
+  --ink-strong: #0f1815;
+  --muted: #64716b;
+
+  --brand: #2f4a3e;
+  --on-brand: #f6f1e6;
+  --accent: #c95a37;
+  --accent-strong: #a04426;
+  --on-accent: #fff;
+  --gold: #b98a2c;
+  --info: #45838a;
+
+  --ok: #2e7d5b;
+  --ok-surface: #e7f2ea;
+  --warn: #96650f;
+  --warn-surface: #f9efd7;
+  --danger: #b0433a;
+  --danger-surface: #fdeeec;
+  --cache-ink: #4e5f6a;
+  --cache-surface: #ecf1f4;
+  --cache-line: #b9c8d1;
+
+  --focus: #45838a;
+  --r-s: 6px;
+  --r-m: 12px;
+  --r-pill: 999px;
+  --shadow-rest: 0 2px 6px rgb(20 28 24 / .07);
+  --shadow-raised: 0 18px 42px -18px rgb(20 28 24 / .22), 0 2px 6px rgb(20 28 24 / .06);
+  --shadow-float: 0 28px 70px -22px rgb(20 28 24 / .3), 0 8px 24px -8px rgb(201 90 55 / .16);
+  --scrim: rgb(15 24 21 / .55);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --bg: #0e1513;
+    --bg-tint: #111a17;
+    --surface: #16211d;
+    --surface-2: #1c2823;
+    --panel: #0b1210;
+    --panel-ink: #ece5d6;
+    --panel-muted: rgb(236 229 214 / .6);
+    --panel-line: rgb(236 229 214 / .14);
+    --line: #26332e;
+    --line-strong: #3a4b44;
+    --ink: #e9e2d3;
+    --ink-strong: #f6f1e6;
+    --muted: #93a099;
+
+    --brand: #8db8a1;
+    --on-brand: #0e1a15;
+    --accent: #e0805c;
+    --accent-strong: #eb9a7a;
+    --on-accent: #211008;
+    --gold: #d5ab52;
+    --info: #8cc0c4;
+
+    --ok: #6cc39a;
+    --ok-surface: #14261e;
+    --warn: #d9ab55;
+    --warn-surface: #262012;
+    --danger: #e58a80;
+    --danger-surface: #2b1715;
+    --cache-ink: #a7b8c2;
+    --cache-surface: #17222a;
+    --cache-line: #3c4f5b;
+
+    --focus: #8cc0c4;
+    --shadow-rest: 0 2px 6px rgb(0 0 0 / .35);
+    --shadow-raised: 0 18px 42px -18px rgb(0 0 0 / .55), 0 2px 6px rgb(0 0 0 / .3);
+    --shadow-float: 0 28px 70px -22px rgb(0 0 0 / .6), 0 8px 24px -8px rgb(0 0 0 / .4);
+    --scrim: rgb(4 8 7 / .66);
+  }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #0e1513;
+  --bg-tint: #111a17;
+  --surface: #16211d;
+  --surface-2: #1c2823;
+  --panel: #0b1210;
+  --panel-ink: #ece5d6;
+  --panel-muted: rgb(236 229 214 / .6);
+  --panel-line: rgb(236 229 214 / .14);
+  --line: #26332e;
+  --line-strong: #3a4b44;
+  --ink: #e9e2d3;
+  --ink-strong: #f6f1e6;
+  --muted: #93a099;
+
+  --brand: #8db8a1;
+  --on-brand: #0e1a15;
+  --accent: #e0805c;
+  --accent-strong: #eb9a7a;
+  --on-accent: #211008;
+  --gold: #d5ab52;
+  --info: #8cc0c4;
+
+  --ok: #6cc39a;
+  --ok-surface: #14261e;
+  --warn: #d9ab55;
+  --warn-surface: #262012;
+  --danger: #e58a80;
+  --danger-surface: #2b1715;
+  --cache-ink: #a7b8c2;
+  --cache-surface: #17222a;
+  --cache-line: #3c4f5b;
+
+  --focus: #8cc0c4;
+  --shadow-rest: 0 2px 6px rgb(0 0 0 / .35);
+  --shadow-raised: 0 18px 42px -18px rgb(0 0 0 / .55), 0 2px 6px rgb(0 0 0 / .3);
+  --shadow-float: 0 28px 70px -22px rgb(0 0 0 / .6), 0 8px 24px -8px rgb(0 0 0 / .4);
+  --scrim: rgb(4 8 7 / .66);
+}
+
+/* Legacy aliases: pre-redesign CSS reads these; they resolve to the theme. */
+:root, :root[data-theme='dark'] {
+  --ink-2: var(--panel);
+  --forest: var(--brand);
+  --moss: var(--muted);
+  --paper: var(--bg);
+  --sand: var(--bg-tint);
+  --sand-2: var(--line);
+  --sand-3: var(--line-strong);
+  --terra: var(--accent);
+  --terra-dark: var(--accent-strong);
+  --brass: var(--gold);
+  --sky: var(--info);
+  --white: #fff;
+}

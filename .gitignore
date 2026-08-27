@@ -1,7 +1,10 @@
 __pycache__/
 .DS_Store
 .venv/
-travelbuddy/data/
+# local sqlite dev DB + legacy per-user files (production uses Postgres)
+*.db
+CheckIn/db/users/
+CheckIn/db/users.json.migrated
 *.pyc
 .env
 .claude-flow/
@@ -13,4 +16,3 @@ playwright-report/
 *.tsbuildinfo
 *.db-shm
 *.db-wal
-travelbuddy/ruvector.db

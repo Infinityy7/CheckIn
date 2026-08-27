@@ -1,0 +1,50 @@
+/* App shell: nav, banners, global stage chrome (Waymark). */
+
+.skip-link { position: absolute; left: -9999px; z-index: 100; padding: 10px 16px; background: var(--surface); color: var(--ink); border: 1px solid var(--line-strong); border-radius: var(--r-s); }
+.skip-link:focus-visible { left: 16px; top: 12px; }
+
+.app-nav { position: sticky; top: 0; z-index: 20; min-height: 72px; padding: 8px clamp(16px, 4vw, 56px); display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 16px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(14px); }
+.nav-center { display: flex; align-items: center; justify-content: center; gap: 18px; min-width: 0; }
+.nav-route { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 13px; color: var(--ink); }
+.nav-route svg { color: var(--accent); flex: 0 0 auto; }
+.nav-route span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav-actions { display: flex; justify-content: end; align-items: center; gap: 6px; }
+.brand-button { padding: 0; border: 0; background: none; justify-self: start; cursor: pointer; color: var(--ink); }
+.icon-button { color: var(--ink); }
+.icon-button:hover { background: var(--surface-2); }
+.profile-button { display: flex; align-items: center; gap: 9px; padding: 5px 10px; border: 0; border-radius: var(--r-s); background: none; color: var(--ink); cursor: pointer; text-align: left; }
+.profile-button:hover { background: var(--surface-2); }
+.profile-button > svg { width: 30px; height: 30px; padding: 7px; border-radius: 50%; color: var(--on-brand); background: var(--brand); }
+.profile-button span { display: grid; font-size: 12px; font-weight: 700; }
+.profile-button small { font-weight: 400; color: var(--muted); }
+
+.error-banner { position: fixed; z-index: 50; top: 84px; left: 50%; transform: translateX(-50%); min-width: min(540px, 90vw); display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 13px 16px; border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent); border-left: 3px solid var(--danger); border-radius: var(--r-s); color: var(--danger); background: var(--danger-surface); box-shadow: var(--shadow-raised); font-size: 13px; }
+.error-banner button { border: 0; background: none; color: inherit; text-decoration: underline; cursor: pointer; }
+
+.ops-banner { max-width: 1320px; margin: 16px auto -8px; padding: 0 clamp(16px, 4vw, 56px); }
+
+.pending-checkin { max-width: 1320px; margin: 20px auto -24px; padding: 13px 18px; display: flex; align-items: center; justify-content: space-between; gap: 18px; border: 1px solid var(--line-strong); border-radius: var(--r-s); background: var(--surface); box-shadow: var(--shadow-rest); }
+.pending-checkin > div { display: flex; align-items: center; gap: 12px; }
+.pending-checkin > div > svg { color: var(--accent); }
+.pending-checkin p { display: grid; margin: 0; font-size: 13px; }
+.pending-checkin p span { margin-top: 2px; color: var(--muted); font-size: 11px; }
+
+.full-state, .build-overlay { min-height: 100vh; display: grid; place-items: center; background: var(--bg-tint); }
+.build-overlay { position: fixed; inset: 0; z-index: 70; background: color-mix(in srgb, var(--bg-tint) 92%, transparent); backdrop-filter: blur(8px); }
+
+@media (max-width: 920px) {
+  .app-nav { grid-template-columns: auto 1fr auto; }
+  .nav-center .stepper { display: none; }
+}
+@media (max-width: 820px) {
+  .app-nav { gap: 8px; padding-inline: 12px; }
+  .nav-actions { gap: 2px; }
+  .nav-route, .nav-actions > .button, .profile-button span { display: none; }
+  .health-indicator__label { display: none; }
+  .health-indicator__trigger { padding: 10px; }
+  .ops-banner, .pending-checkin { margin-inline: 16px; }
+}
+@media (max-width: 480px) {
+  .brand span:last-child { display: none; }
+  .profile-button { padding-inline: 4px; }
+}

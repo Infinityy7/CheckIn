@@ -1,0 +1,48 @@
+# LiteLLM proxy config — Anthropic-native passthrough. No secrets here;
+# values are substituted from the environment via os.environ/.
+# The app calls the passthrough prefix /anthropic/v1/messages.
+#
+# Virtual keys are created at runtime, e.g.:
+#   curl -X POST http://localhost:4000/key/generate \
+#     -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+#     -d '{"max_budget": 100, "budget_duration": "30d", "rpm_limit": 60, "tpm_limit": 200000, "max_parallel_requests": 10}'
+# max_parallel_requests is the cross-worker concurrency cap replacing the
+# app's per-process semaphores when LLM_GATEWAY_ENABLED=true. Use separate
+# keys per workload (research vs interactive) to reserve interactive
+# capacity. Verify passthrough enforcement of these limits on your deployed
+# LiteLLM version before relying on them.
+
+model_list:
+  - model_name: claude-opus-5
+    litellm_params:
+      model: anthropic/claude-opus-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: claude-sonnet-5
+    litellm_params:
+      model: anthropic/claude-sonnet-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: claude-haiku-4-5
+    litellm_params:
+      model: anthropic/claude-haiku-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+litellm_settings:
+  num_retries: 0
+  request_timeout: 190
+  # Keep in lockstep with app LLM_LOG_PROMPTS; flip only when
+  # LLM_LOG_PROMPTS=true is deliberate.
+  turn_off_message_logging: true
+  # Never silently drop Anthropic-native params.
+  drop_params: false
+
+router_settings:
+  # App owns retries — invariant.
+  num_retries: 0
+  # No fallbacks key on purpose: app-side fallback preserves native
+  # passthrough features (web_search, adaptive thinking, effort, pause_turn).
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  # Mirrors LLM_LOG_RETENTION_DAYS=30; verify key name against deployed
+  # LiteLLM version.
+  maximum_spend_logs_retention_period: "30d"
