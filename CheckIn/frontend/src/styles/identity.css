@@ -326,3 +326,30 @@
   .idn-reveal .idn-button-row { width: 100%; flex-direction: column; }
   .idn-reveal .button { width: 100%; justify-content: center; }
 }
+
+/* ---------- ProfileDrawer: travel invitations ---------- */
+
+.idn-invites { display: grid; gap: 8px; margin: 0 0 12px; padding: 0; list-style: none; }
+.idn-invite {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong); border-radius: var(--r-s);
+  background: var(--surface);
+}
+.idn-invite__who { display: grid; gap: 2px; min-width: 0; font-size: 13px; color: var(--ink); }
+.idn-invite__who strong { color: var(--ink-strong); }
+.idn-invite__who small { color: var(--muted); font-size: 11px; line-height: 1.4; }
+.idn-invite__actions { display: flex; flex-shrink: 0; gap: 6px; }
+.idn-invite__actions .button { min-height: 34px; padding: 6px 12px; font-size: 12px; }
+
+.idn-companions__group { display: grid; gap: 6px; margin-top: 12px; }
+.idn-companions__group > span { font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.idn-linked { display: inline-flex; align-items: center; gap: 2px; }
+.idn-linked__remove { width: 28px; height: 28px; color: var(--muted); }
+.idn-linked__remove:hover { color: var(--danger); background: var(--danger-surface); }
+.idn-linked__remove svg { width: 13px; height: 13px; }
+
+@media (max-width: 480px) {
+  .idn-invite { flex-direction: column; align-items: stretch; }
+  .idn-invite__actions .button { flex: 1; justify-content: center; }
+}

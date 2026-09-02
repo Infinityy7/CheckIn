@@ -15,7 +15,7 @@ from inventory.models import (
     Money,
 )
 from inventory.providers import DemoProvider
-from inventory.service import InventoryDomainError, InventoryService
+from inventory.service import CartVersionConflict, InventoryDomainError, InventoryService
 from schemas import AgentResult, Recommendation, TripPreferences
 from store import create_trip, get_trip, start_research
 
@@ -197,3 +197,87 @@ def test_full_research_refresh_invalidates_old_inventory_and_cart(tmp_path):
     raw = db.load_trip_state(state.trip_id)
     assert raw["inventory_snapshots"] == {}
     assert raw["cart"] is None
+
+
+def test_cart_mutations_are_versioned_and_interleaved_writes_keep_both_items(tmp_path):
+    state = _trip(tmp_path)
+    service = InventoryService(DemoProvider())
+    hotel = asyncio.run(service.hotel_rates(state, "hotel-1"))
+    flights = asyncio.run(service.flight_offers(state, "transport-1"))
+    rate = hotel.rooms[0].rate_plans[0]
+    offer = flights.offers[0]
+
+    stale_reader_a = service.cart(state)
+    stale_reader_b = service.cart(state)
+    assert stale_reader_a.version == 1
+    assert stale_reader_b.version == 1
+
+    first = asyncio.run(service.add_item(
+        state, AddCartItemInput(recommendationId="hotel-1", ratePlanId=rate.id, kind="hotel"),
+    ))
+    second = asyncio.run(service.add_item(
+        state, AddCartItemInput(recommendationId="transport-1", ratePlanId=offer.id, kind=CartItemKind.FLIGHT),
+    ))
+    assert first.version == 2
+    assert second.version == 3
+    assert {item.kind for item in second.items} == {CartItemKind.HOTEL, CartItemKind.FLIGHT}
+    assert db.load_trip_state(state.trip_id)["cart"]["version"] == 3
+
+    replaced = asyncio.run(service.add_item(
+        state, AddCartItemInput(recommendationId="hotel-1", ratePlanId=hotel.rooms[1].rate_plans[0].id, kind="hotel"),
+    ))
+    assert replaced.version == 4
+    assert [item.rate_plan_id for item in replaced.items if item.kind == CartItemKind.HOTEL] == [hotel.rooms[1].rate_plans[0].id]
+
+    with pytest.raises(CartVersionConflict):
+        service.remove_item(state, replaced.items[0].id, expected_version=3)
+    still = service.cart(state)
+    assert still.version == 4
+    assert len(still.items) == 2
+
+    removed = service.remove_item(state, replaced.items[0].id, expected_version=4)
+    assert removed.version == 5
+    assert len(removed.items) == 1
+
+
+def test_exact_choice_changes_clear_a_stored_itinerary_but_expiry_and_revalidation_do_not(tmp_path):
+    now = [datetime(2026, 8, 1, 12, tzinfo=timezone.utc)]
+    state = _trip(tmp_path)
+    service = InventoryService(DemoProvider(clock=lambda: now[0]), clock=lambda: now[0])
+    hotel = asyncio.run(service.hotel_rates(state, "hotel-1"))
+    rate = hotel.rooms[0].rate_plans[0]
+    plan = {"trip_title": "Kept", "trip_summary": "s", "days": []}
+
+    def store_plan() -> None:
+        db.mutate_trip_state(state.trip_id, lambda raw: raw.update({"itinerary": plan, "itinerary_fingerprint": "fp"}))
+
+    store_plan()
+    asyncio.run(service.add_item(
+        state, AddCartItemInput(recommendationId="restaurant-1", kind=CartItemKind.RESTAURANT),
+    ))
+    assert db.load_trip_state(state.trip_id)["itinerary"] == plan
+
+    asyncio.run(service.add_item(
+        state, AddCartItemInput(recommendationId="hotel-1", ratePlanId=rate.id, kind="hotel"),
+    ))
+    assert db.load_trip_state(state.trip_id)["itinerary"] is None
+    assert db.load_trip_state(state.trip_id)["itinerary_fingerprint"] is None
+
+    store_plan()
+    asyncio.run(service.revalidate(state))
+    assert db.load_trip_state(state.trip_id)["itinerary"] == plan
+
+    cart = service.cart(state)
+    hotel_item = next(item for item in cart.items if item.kind == CartItemKind.HOTEL)
+    service.remove_item(state, hotel_item.id)
+    assert db.load_trip_state(state.trip_id)["itinerary"] is None
+
+    asyncio.run(service.add_item(
+        state, AddCartItemInput(recommendationId="hotel-1", ratePlanId=rate.id, kind="hotel"),
+    ))
+    store_plan()
+    now[0] += timedelta(hours=1, seconds=1)
+    expired = service.cart(state)
+    assert expired.items == []
+    assert expired.version > cart.version
+    assert db.load_trip_state(state.trip_id)["itinerary"] == plan

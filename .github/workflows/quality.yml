@@ -113,6 +113,11 @@ jobs:
           cache-dependency-path: CheckIn/frontend/package-lock.json
       - name: Install locked frontend dependencies
         run: npm --prefix frontend ci
+      - name: Verify the committed static bundle matches a fresh frontend build
+        working-directory: CheckIn/frontend
+        run: |
+          npx vite build --outDir "$RUNNER_TEMP/static-check" --emptyOutDir
+          diff -r ../static "$RUNNER_TEMP/static-check"
       - name: Run frontend quality and coverage checks
         run: ./scripts/quality.sh --frontend
       - name: Upload frontend diagnostics

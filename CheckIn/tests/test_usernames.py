@@ -166,6 +166,7 @@ def test_user_lookup(client):
         "username": "target-user",
         "name": "Target Person",
         "intake_complete": False,
+        "link_status": "none",
     }
 
     missing = client.get(
@@ -182,6 +183,14 @@ def test_trip_creation_guards_username_cotravellers(client, monkeypatch):
     owner_headers = register(client, "owner@example.com", username="trip-owner")
     complete_intake(client, owner_headers, monkeypatch)
     buddy_headers = register(client, "buddy@example.com", username="b_user")
+    invitation = client.post(
+        "/api/companions/links", headers=owner_headers, json={"username": "b_user"}
+    )
+    assert invitation.status_code == 200, invitation.text
+    accepted = client.post(
+        f"/api/companions/links/{invitation.json()['link_id']}/accept", headers=buddy_headers
+    )
+    assert accepted.status_code == 200, accepted.text
 
     incomplete_buddy = client.post(
         "/api/trip/preferences",

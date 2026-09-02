@@ -107,7 +107,7 @@ async function mockWorkspace(page: Page) {
   }))
   await page.route('**/api/trips/pending-check-in', (route) => json(route, { trip: null }))
   await page.route('**/api/trip/trip-quality/cart/revalidate', (route) => json(route, {
-    tripId: 'trip-quality', state: 'ready', savedExpiresAt: new Date(now + 60 * 60_000).toISOString(), checkedAt: new Date().toISOString(), items: [{
+    tripId: 'trip-quality', version: 3, state: 'ready', savedExpiresAt: new Date(now + 60 * 60_000).toISOString(), checkedAt: new Date().toISOString(), items: [{
       id: 'cart-hotel-1', recommendationId: 'hotel-1', ratePlanId: 'flex-rate', kind: 'hotel',
       title: 'Gion Garden House', subtitle: 'Deluxe king · Flexible breakfast rate', status: 'price_changed',
       total: { amount: 640, currency: 'USD' }, quoteExpiresAt: new Date(now + 20 * 60_000).toISOString(),
@@ -119,7 +119,7 @@ async function mockWorkspace(page: Page) {
     const input = route.request().postDataJSON() as { recommendationId: string; ratePlanId?: string; kind: 'hotel' | 'flight' | 'ride' | 'restaurant' }
     const isFlight = input.kind === 'flight'
     return json(route, {
-      tripId: 'trip-quality', state: 'open', savedExpiresAt: new Date(now + 60 * 60_000).toISOString(), checkedAt: new Date().toISOString(), items: [{
+      tripId: 'trip-quality', version: 2, state: 'open', savedExpiresAt: new Date(now + 60 * 60_000).toISOString(), checkedAt: new Date().toISOString(), items: [{
         id: isFlight ? 'cart-flight-1' : 'cart-hotel-1', recommendationId: input.recommendationId,
         ratePlanId: input.ratePlanId, kind: input.kind, title: isFlight ? 'Quality Air QA 101' : 'Gion Garden House',
         subtitle: isFlight ? 'BOM → KIX · direct' : 'Deluxe king · Flexible breakfast rate', status: 'quoted',
@@ -129,11 +129,11 @@ async function mockWorkspace(page: Page) {
     })
   })
   await page.route('**/api/trip/trip-quality/cart/items/*', (route) => json(route, {
-    tripId: 'trip-quality', state: 'open', savedExpiresAt: new Date(now + 60 * 60_000).toISOString(),
+    tripId: 'trip-quality', version: 4, state: 'open', savedExpiresAt: new Date(now + 60 * 60_000).toISOString(),
     checkedAt: new Date().toISOString(), items: [],
   }))
   await page.route('**/api/trip/trip-quality/cart', (route) => json(route, {
-    tripId: 'trip-quality', state: 'open', savedExpiresAt: new Date(now + 60 * 60_000).toISOString(),
+    tripId: 'trip-quality', version: 1, state: 'open', savedExpiresAt: new Date(now + 60 * 60_000).toISOString(),
     checkedAt: new Date().toISOString(), items: [],
   }))
   await page.route('**/api/trip/trip-quality/hotels/*/rates', (route) => {
@@ -141,6 +141,7 @@ async function mockWorkspace(page: Page) {
     return json(route, { ...rates, recommendationId })
   })
   await page.route('**/api/trip/trip-quality/flights/transport-1/offers', (route) => json(route, flights))
+  await page.route('**/api/trip/trip-quality/select', (route) => json(route, { status: 'selections_saved', count: (route.request().postDataJSON() as { selections: string[] }).selections.length }))
   await page.route('**/api/trip/trip-quality', (route) => json(route, trip))
   return diagnostics
 }
@@ -158,6 +159,8 @@ test('controlled hotel rates move into the cart without claiming a reservation',
   await expect(page.getByText('$640')).toBeVisible()
   await page.getByRole('button', { name: /Save quoted rate/i }).click()
   await expect(page.getByText('Price quoted')).toBeVisible()
+  await expect(page.getByRole('button', { name: /^Added$/i })).toHaveCount(1)
+  await expect(page.getByRole('button', { name: /^Added$/i })).toBeDisabled()
   await expect(page.locator('.cart-truth')).toContainText('does not reserve inventory')
   await expect(page.getByText(/Cart clears in/)).toBeVisible()
   await expect(page.getByText('Clears this shortlist only · nothing is reserved')).toBeVisible()
@@ -171,6 +174,7 @@ test('controlled hotel rates move into the cart without claiming a reservation',
   await expect(page.getByText('Price changed')).toBeVisible()
   await page.getByRole('button', { name: /Remove Gion Garden House from cart/i }).click()
   await expect(page.getByText(/Open a hotel’s room prices/i)).toBeVisible()
+  await expect(page.getByRole('button', { name: /Save quoted rate/i })).toBeEnabled()
 
   expect(diagnostics.consoleErrors).toEqual([])
   expect(diagnostics.pageErrors).toEqual([])
@@ -241,7 +245,7 @@ for (const viewport of [
 test('cart TTL shows an honest countdown and expired quotes are labelled', async ({ page }) => {
   const diagnostics = await mockWorkspace(page)
   await page.route('**/api/trip/trip-quality/cart', (route) => json(route, {
-    tripId: 'trip-quality', state: 'open',
+    tripId: 'trip-quality', version: 5, state: 'open',
     savedExpiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
     checkedAt: new Date().toISOString(),
     items: [

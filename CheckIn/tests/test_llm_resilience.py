@@ -41,6 +41,20 @@ def _timeout() -> anthropic.APITimeoutError:
 
 
 @pytest.fixture(autouse=True)
+def direct_topology():
+    """Bulkhead and deadline assertions assume the direct path; force it."""
+    mp = pytest.MonkeyPatch()
+    mp.setattr(llm_client, "LLM_GATEWAY_ENABLED", False)
+    mp.setattr(llm_client, "LLM_GATEWAY_API_KEY", "")
+    llm_client._rebuild_client()
+    try:
+        yield
+    finally:
+        mp.undo()
+        llm_client._rebuild_client()
+
+
+@pytest.fixture(autouse=True)
 def reset_resilience(monkeypatch):
     llm_client._reset_resilience_state()
     monkeypatch.setattr(llm_client, "LLM_RETRY_BASE_DELAY_SECONDS", 0)

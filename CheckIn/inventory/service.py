@@ -25,9 +25,12 @@ from .models import (
     CartItemState,
     CartState,
     FlightInventory,
+    FlightOffer,
     HotelInventory,
     Money,
     ProviderQuote,
+    RoomRate,
+    RoomType,
     SourceMode,
 )
 from .providers import (
@@ -45,14 +48,27 @@ logger = logging.getLogger(__name__)
 HOTEL_SNAPSHOTS = "hotels"
 FLIGHT_SNAPSHOTS = "flights"
 DEFAULT_CART_TTL_MINUTES = 60
+EXACT_KINDS = {CartItemKind.HOTEL, CartItemKind.FLIGHT}
+TERMINAL_STATES = {CartItemState.CONFIRMED, CartItemState.BOOKED}
 
 
 class InventoryDomainError(RuntimeError):
     """A safe domain failure that an API route can expose to the user."""
 
+    code: str | None = None
+
     def __init__(self, message: str, *, status_code: int = 409) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+class CartVersionConflict(InventoryDomainError):
+    """The caller's cart snapshot is older than the stored cart."""
+
+    code = "CART_VERSION_CONFLICT"
+
+    def __init__(self) -> None:
+        super().__init__("Your cart changed elsewhere. Refresh it and try again.", status_code=409)
 
 
 def _utc_now() -> datetime:
@@ -98,12 +114,6 @@ def _save_snapshot(trip_id: str, bucket: str, recommendation_id: str, value: dic
     db.mutate_trip_state(trip_id, update)
 
 
-def _save_cart(cart: Cart) -> Cart:
-    payload = cart.model_dump(mode="json", by_alias=False)
-    db.mutate_trip_state(cart.trip_id, lambda raw: raw.update({"cart": payload}))
-    return cart
-
-
 def _cart_from_raw(trip_id: str, raw: dict | None) -> Cart:
     payload = raw.get("cart") if isinstance(raw, dict) else None
     if isinstance(payload, dict):
@@ -112,6 +122,171 @@ def _cart_from_raw(trip_id: str, raw: dict | None) -> Cart:
         except ValueError:
             logger.warning("Discarding invalid persisted cart for trip %s", trip_id)
     return Cart(trip_id=trip_id)
+
+
+def _exact_choices(cart: Cart) -> set[str]:
+    return {
+        f"{item.kind.value}:{item.recommendation_id}:{item.rate_plan_id}"
+        for item in cart.items
+        if item.kind in EXACT_KINDS and item.rate_plan_id
+    }
+
+
+def _mutate_cart(
+    trip_id: str,
+    apply: Callable[[Cart, dict], None],
+    *,
+    invalidate_itinerary: bool = True,
+) -> Cart:
+    """Load, change, version, and persist the cart inside one locked trip mutation.
+
+    Every read-modify-write happens under the row lock so two concurrent
+    mutations can never overwrite each other. A change to the exact supplier
+    choices drops any itinerary that was built from the previous choices.
+    """
+    result: list[Cart] = []
+
+    def update(raw: dict) -> None:
+        cart = _cart_from_raw(trip_id, raw)
+        before = _exact_choices(cart)
+        apply(cart, raw)
+        cart.version += 1
+        if invalidate_itinerary and _exact_choices(cart) != before:
+            raw["itinerary"] = None
+            raw["itinerary_fingerprint"] = None
+        raw["cart"] = cart.model_dump(mode="json", by_alias=False)
+        result.append(cart)
+
+    db.mutate_trip_state(trip_id, update)
+    return result[0]
+
+
+def _money_text(value: Money | None) -> str | None:
+    if value is None:
+        return None
+    return f"{value.amount:.2f} {value.currency}"
+
+
+def _iso(value: datetime | None) -> str | None:
+    return value.isoformat() if isinstance(value, datetime) else None
+
+
+def _find_rate(inventory: HotelInventory, rate_plan_id: str) -> tuple[RoomType, RoomRate] | None:
+    for room in inventory.rooms:
+        for rate in room.rate_plans:
+            if rate.id == rate_plan_id:
+                return room, rate
+    return None
+
+
+def _hotel_choice(raw: dict, item: dict) -> dict:
+    choice = {
+        "kind": "hotel",
+        "recommendation_id": item.get("recommendation_id"),
+        "name": item.get("title"),
+        "saved_option": item.get("subtitle"),
+        "total": None,
+    }
+    total = item.get("total")
+    if isinstance(total, dict) and total.get("amount") is not None:
+        choice["total"] = f"{float(total['amount']):.2f} {total.get('currency', '')}".strip()
+    snapshot = _snapshot(raw, HOTEL_SNAPSHOTS, str(item.get("recommendation_id")))
+    if snapshot is None:
+        return choice
+    try:
+        inventory = HotelInventory.model_validate(snapshot)
+    except ValueError:
+        return choice
+    found = _find_rate(inventory, str(item.get("rate_plan_id")))
+    if found is None:
+        return choice
+    room, rate = found
+    choice.update({
+        "name": inventory.hotel_name,
+        "room": room.name,
+        "room_description": room.description,
+        "rate": rate.label,
+        "board": rate.board,
+        "refundable": rate.refundable,
+        "cancellation": rate.cancellation_summary,
+        "total": _money_text(rate.total),
+        "nightly": _money_text(rate.nightly),
+        "check_in": inventory.check_in_date.isoformat(),
+        "check_out": inventory.check_out_date.isoformat(),
+    })
+    return choice
+
+
+def _flight_choice(raw: dict, item: dict) -> dict:
+    choice = {
+        "kind": "flight",
+        "recommendation_id": item.get("recommendation_id"),
+        "name": item.get("title"),
+        "saved_option": item.get("subtitle"),
+        "total": None,
+    }
+    total = item.get("total")
+    if isinstance(total, dict) and total.get("amount") is not None:
+        choice["total"] = f"{float(total['amount']):.2f} {total.get('currency', '')}".strip()
+    snapshot = _snapshot(raw, FLIGHT_SNAPSHOTS, str(item.get("recommendation_id")))
+    if snapshot is None:
+        return choice
+    try:
+        inventory = FlightInventory.model_validate(snapshot)
+    except ValueError:
+        return choice
+    offer: FlightOffer | None = next(
+        (value for value in inventory.offers if value.id == item.get("rate_plan_id")), None
+    )
+    if offer is None:
+        return choice
+    choice.update({
+        "carrier": offer.carrier,
+        "flight_number": offer.flight_number,
+        "route": f"{offer.origin} -> {offer.destination}",
+        "depart_at": _iso(offer.depart_at),
+        "arrive_at": _iso(offer.arrive_at),
+        "duration_minutes": offer.duration_minutes,
+        "stops": offer.stops,
+        "journey_type": offer.journey_type,
+        "total": _money_text(offer.total),
+    })
+    return_carrier = getattr(offer, "return_carrier", None)
+    return_origin = getattr(offer, "return_origin", None)
+    return_destination = getattr(offer, "return_destination", None)
+    if offer.journey_type == "round_trip":
+        if return_carrier or return_origin:
+            choice["return_leg"] = {
+                "carrier": return_carrier,
+                "flight_number": getattr(offer, "return_flight_number", None),
+                "route": f"{return_origin} -> {return_destination}",
+                "depart_at": _iso(getattr(offer, "return_depart_at", None)),
+                "arrive_at": _iso(getattr(offer, "return_arrive_at", None)),
+                "duration_minutes": getattr(offer, "return_duration_minutes", None),
+                "stops": getattr(offer, "return_stops", None),
+            }
+        else:
+            choice["return_leg"] = "unknown - do not invent a return flight"
+    return choice
+
+
+def exact_cart_choices(raw: dict) -> list[dict]:
+    """Resolve saved hotel rates and flight offers to their supplier snapshots.
+
+    The itinerary prompt receives these so the plan uses the exact room and
+    flight the traveler saved instead of a generic substitute.
+    """
+    cart = raw.get("cart")
+    items = cart.get("items") if isinstance(cart, dict) else None
+    choices: list[dict] = []
+    for item in items or []:
+        if not isinstance(item, dict) or not item.get("rate_plan_id"):
+            continue
+        if item.get("kind") == CartItemKind.HOTEL.value:
+            choices.append(_hotel_choice(raw, item))
+        elif item.get("kind") == CartItemKind.FLIGHT.value:
+            choices.append(_flight_choice(raw, item))
+    return choices
 
 
 def _money_changed(before: Money | None, after: Money) -> bool:
@@ -180,30 +355,36 @@ class InventoryService:
         return inventory
 
     def cart(self, state: TripState) -> Cart:
-        raw = db.load_trip_state(state.trip_id)
-        cart = _cart_from_raw(state.trip_id, raw)
+        cart = _cart_from_raw(state.trip_id, db.load_trip_state(state.trip_id))
         now = self.clock()
-        changed = False
+        if not self._apply_expiry(cart, now):
+            return cart
+        return _mutate_cart(
+            state.trip_id,
+            lambda fresh, _raw: self._apply_expiry(fresh, now),
+            invalidate_itinerary=False,
+        )
+
+    def _apply_expiry(self, cart: Cart, now: datetime) -> bool:
+        """Expire the saved shortlist or individual supplier clocks; returns whether anything changed."""
         saved_expiry = _aware(cart.saved_expires_at)
         if saved_expiry is not None and saved_expiry <= now:
-            cart = Cart(trip_id=state.trip_id, checked_at=now)
-            return _save_cart(cart)
-
-        terminal = {CartItemState.CONFIRMED, CartItemState.BOOKED}
+            cart.items = []
+            cart.saved_expires_at = None
+            self._finish_cart(cart, now)
+            return True
+        changed = False
         for item in cart.items:
-            if item.status in terminal:
+            if item.status in TERMINAL_STATES:
                 continue
-            hold_expiry = _aware(item.hold_expires_at)
-            quote_expiry = _aware(item.quote_expires_at)
-            expiry = hold_expiry or quote_expiry
+            expiry = _aware(item.hold_expires_at) or _aware(item.quote_expires_at)
             if expiry is not None and expiry <= now and item.status != CartItemState.EXPIRED:
                 item.status = CartItemState.EXPIRED
                 item.message = "This supplier price expired. Recheck it before continuing."
                 changed = True
         if changed:
             self._finish_cart(cart, now)
-            return _save_cart(cart)
-        return cart
+        return changed
 
     async def add_item(self, state: TripState, body: AddCartItemInput) -> Cart:
         category = {
@@ -214,32 +395,35 @@ class InventoryService:
         }[body.kind]
         recommendation = _recommendation(state, body.recommendation_id, category)
         now = self.clock()
-        raw = db.load_trip_state(state.trip_id) or {}
-        cart = _cart_from_raw(state.trip_id, raw)
-        cart.items = [
-            item for item in cart.items
-            if not (item.kind == body.kind and item.recommendation_id == recommendation.id)
-        ]
 
+        def apply(cart: Cart, raw: dict) -> None:
+            cart.items = [
+                item for item in cart.items
+                if not (item.kind == body.kind and item.recommendation_id == recommendation.id)
+            ]
+            cart.items.append(self._build_item(raw, body, recommendation, now))
+            cart.saved_expires_at = now + self.cart_ttl
+            self._finish_cart(cart, now)
+
+        return _mutate_cart(state.trip_id, apply)
+
+    def _build_item(
+        self,
+        raw: dict,
+        body: AddCartItemInput,
+        recommendation: Recommendation,
+        now: datetime,
+    ) -> CartItem:
         if body.kind == CartItemKind.HOTEL:
             snapshot = _snapshot(raw, HOTEL_SNAPSHOTS, recommendation.id)
             if snapshot is None:
                 raise InventoryDomainError("Check this hotel's current room prices before saving one.")
-            inventory = HotelInventory.model_validate(snapshot)
-            room_and_rate = next(
-                (
-                    (room, rate)
-                    for room in inventory.rooms
-                    for rate in room.rate_plans
-                    if rate.id == body.rate_plan_id
-                ),
-                None,
-            )
-            if room_and_rate is None:
+            found = _find_rate(HotelInventory.model_validate(snapshot), body.rate_plan_id or "")
+            if found is None:
                 raise InventoryDomainError("That room rate is not part of this trip's latest supplier results.")
-            room, rate = room_and_rate
+            room, rate = found
             self._require_addable(rate.availability_status, rate.quote_expires_at, rate.hold_expires_at)
-            item = CartItem(
+            return CartItem(
                 kind=body.kind,
                 recommendation_id=recommendation.id,
                 rate_plan_id=rate.id,
@@ -261,7 +445,7 @@ class InventoryService:
                     else "Price saved, not reserved. Availability is rechecked before booking."
                 ),
             )
-        elif body.kind == CartItemKind.FLIGHT:
+        if body.kind == CartItemKind.FLIGHT:
             snapshot = _snapshot(raw, FLIGHT_SNAPSHOTS, recommendation.id)
             if snapshot is None:
                 raise InventoryDomainError("Check current flight offers before saving one.")
@@ -271,7 +455,7 @@ class InventoryService:
                 raise InventoryDomainError("That flight is not part of this trip's latest supplier results.")
             self._require_addable(offer.availability_status, offer.quote_expires_at, offer.hold_expires_at)
             flight_number = f" {offer.flight_number}" if offer.flight_number else ""
-            item = CartItem(
+            return CartItem(
                 kind=body.kind,
                 recommendation_id=recommendation.id,
                 rate_plan_id=offer.id,
@@ -293,70 +477,83 @@ class InventoryService:
                     else "Fare saved, not reserved. Availability is rechecked before booking."
                 ),
             )
-        else:
-            item = CartItem(
-                kind=body.kind,
-                recommendation_id=recommendation.id,
-                title=recommendation.name,
-                subtitle=recommendation.estimated_cost,
-                status=CartItemState.SAVED,
-                source="CheckIn recommendation",
-                source_mode=SourceMode.UNAVAILABLE,
-                is_live=False,
-                added_at=now,
-                checked_at=now,
-                message="Saved choice only. No supplier inventory or booking hold is attached.",
-            )
+        return CartItem(
+            kind=body.kind,
+            recommendation_id=recommendation.id,
+            title=recommendation.name,
+            subtitle=recommendation.estimated_cost,
+            status=CartItemState.SAVED,
+            source="CheckIn recommendation",
+            source_mode=SourceMode.UNAVAILABLE,
+            is_live=False,
+            added_at=now,
+            checked_at=now,
+            message="Saved choice only. No supplier inventory or booking hold is attached.",
+        )
 
-        cart.items.append(item)
-        cart.saved_expires_at = now + self.cart_ttl
-        self._finish_cart(cart, now)
-        return _save_cart(cart)
+    def remove_item(self, state: TripState, item_id: str, *, expected_version: int | None = None) -> Cart:
+        now = self.clock()
 
-    def remove_item(self, state: TripState, item_id: str) -> Cart:
-        cart = self.cart(state)
-        remaining = [item for item in cart.items if item.id != item_id]
-        if len(remaining) == len(cart.items):
-            raise InventoryDomainError("That cart item does not exist.", status_code=404)
-        cart.items = remaining
-        if not remaining:
-            cart.saved_expires_at = None
-        self._finish_cart(cart, self.clock())
-        return _save_cart(cart)
+        def apply(cart: Cart, _raw: dict) -> None:
+            if expected_version is not None and cart.version != expected_version:
+                raise CartVersionConflict()
+            remaining = [item for item in cart.items if item.id != item_id]
+            if len(remaining) == len(cart.items):
+                raise InventoryDomainError("That cart item does not exist.", status_code=404)
+            cart.items = remaining
+            if not remaining:
+                cart.saved_expires_at = None
+            self._finish_cart(cart, now)
+
+        return _mutate_cart(state.trip_id, apply)
 
     async def revalidate(self, state: TripState) -> Cart:
-        cart = self.cart(state)
-        now = self.clock()
-        for item in cart.items:
-            if item.kind not in {CartItemKind.HOTEL, CartItemKind.FLIGHT}:
-                item.status = CartItemState.SAVED
-                item.checked_at = now
+        snapshot = self.cart(state)
+        outcomes: dict[str, tuple[str, ProviderQuote | None]] = {}
+        for item in snapshot.items:
+            if item.kind not in EXACT_KINDS or item.status in TERMINAL_STATES:
                 continue
-            if item.status in {CartItemState.CONFIRMED, CartItemState.BOOKED}:
-                continue
-            item.status = CartItemState.REVALIDATING
             try:
                 quote = await (
                     self.provider.revalidate_hotel_rate(item.rate_plan_id or "")
                     if item.kind == CartItemKind.HOTEL
                     else self.provider.revalidate_flight_offer(item.rate_plan_id or "")
                 )
-                self._apply_quote(item, quote)
+                outcomes[item.id] = ("quote", quote)
             except ProviderItemUnavailableError:
-                item.status = CartItemState.UNAVAILABLE
-                item.checked_at = now
-                item.message = "The supplier says this option is no longer available."
+                outcomes[item.id] = ("unavailable", None)
             except InventoryProviderError:
-                item.status = CartItemState.ERROR
-                item.checked_at = now
-                item.message = "The supplier could not recheck this price. Try again shortly."
+                outcomes[item.id] = ("error", None)
             except Exception:
                 logger.exception("Unexpected inventory revalidation failure for cart item %s", item.id)
-                item.status = CartItemState.ERROR
-                item.checked_at = now
-                item.message = "The supplier could not recheck this price. Try again shortly."
-        self._finish_cart(cart, self.clock())
-        return _save_cart(cart)
+                outcomes[item.id] = ("error", None)
+
+        def apply(cart: Cart, _raw: dict) -> None:
+            now = self.clock()
+            for item in cart.items:
+                if item.kind not in EXACT_KINDS:
+                    item.status = CartItemState.SAVED
+                    item.checked_at = now
+                    continue
+                if item.status in TERMINAL_STATES:
+                    continue
+                outcome = outcomes.get(item.id)
+                if outcome is None:
+                    continue
+                verdict, quote = outcome
+                if verdict == "quote" and quote is not None:
+                    self._apply_quote(item, quote)
+                elif verdict == "unavailable":
+                    item.status = CartItemState.UNAVAILABLE
+                    item.checked_at = now
+                    item.message = "The supplier says this option is no longer available."
+                else:
+                    item.status = CartItemState.ERROR
+                    item.checked_at = now
+                    item.message = "The supplier could not recheck this price. Try again shortly."
+            self._finish_cart(cart, now)
+
+        return _mutate_cart(state.trip_id, apply)
 
     def _require_addable(
         self,
@@ -404,7 +601,7 @@ class InventoryService:
         }
         if not cart.items:
             cart.state = CartState.OPEN
-        elif all(item.status in {CartItemState.CONFIRMED, CartItemState.BOOKED} for item in cart.items):
+        elif all(item.status in TERMINAL_STATES for item in cart.items):
             cart.state = CartState.CONFIRMED
         elif any(item.status in issue_states for item in cart.items):
             cart.state = CartState.PARTIAL

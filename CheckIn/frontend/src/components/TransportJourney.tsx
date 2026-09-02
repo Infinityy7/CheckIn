@@ -45,10 +45,11 @@ function Leg({ number, icon: Icon, title, route, detail, pending }: {
   </li>
 }
 
-export function TransportJourney({ tripId, recommendation, preferences, onCartChange, onFlightAdded }: {
+export function TransportJourney({ tripId, recommendation, preferences, cart, onCartChange, onFlightAdded }: {
   tripId?: string
   recommendation: Recommendation
   preferences: TripPreferences
+  cart?: TripCart | null
   onCartChange?: (cart: TripCart) => void
   onFlightAdded?: () => void
 }) {
@@ -78,6 +79,6 @@ export function TransportJourney({ tripId, recommendation, preferences, onCartCh
       </ol></section>
     </div>
     <div className="daily-mobility"><MapPinned /><div><small>Daily mobility</small><strong>{daily || 'Local transport plan pending'}</strong><p>{text(metadata, 'passes_or_cards') || list(metadata, 'apps_to_download') || 'Kept separate from airport and flight bookings.'}</p></div></div>
-    {tripId && onCartChange && onFlightAdded && <FlightOffers tripId={tripId} recommendation={recommendation} onCartChange={onCartChange} onAdded={onFlightAdded} />}
+    {tripId && onCartChange && onFlightAdded && <FlightOffers tripId={tripId} recommendation={recommendation} cart={cart ?? null} onCartChange={onCartChange} onAdded={onFlightAdded} />}
   </section>
 }

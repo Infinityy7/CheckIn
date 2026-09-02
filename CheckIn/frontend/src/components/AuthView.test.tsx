@@ -45,7 +45,7 @@ it('shows the username as Available when the lookup returns 404', async () => {
 })
 
 it('shows the username as Taken when the lookup succeeds', async () => {
-  vi.spyOn(api, 'lookupUser').mockResolvedValue({ username: 'wanderer', name: 'Someone Else', intake_complete: true })
+  vi.spyOn(api, 'lookupUser').mockResolvedValue({ username: 'wanderer', name: 'Someone Else', intake_complete: true, link_status: 'accepted' })
   render(<AuthView onAuthenticated={vi.fn()} />)
 
   const field = screen.getByLabelText(/Username/i)

@@ -61,6 +61,20 @@ def _gateway(enabled: bool = True, base_url: str = "http://gateway.test/anthropi
 
 
 @pytest.fixture(autouse=True)
+def direct_topology():
+    """Start every test on the direct path regardless of the shell or .env."""
+    mp = pytest.MonkeyPatch()
+    mp.setattr(llm_client, "LLM_GATEWAY_ENABLED", False)
+    mp.setattr(llm_client, "LLM_GATEWAY_API_KEY", "")
+    llm_client._rebuild_client()
+    try:
+        yield
+    finally:
+        mp.undo()
+        llm_client._rebuild_client()
+
+
+@pytest.fixture(autouse=True)
 def reset_resilience(monkeypatch):
     llm_client._reset_resilience_state()
     monkeypatch.setattr(llm_client, "LLM_RETRY_BASE_DELAY_SECONDS", 0)

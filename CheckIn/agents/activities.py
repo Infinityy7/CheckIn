@@ -9,6 +9,8 @@ from .base import BaseAgent
 class ActivitiesAgent(BaseAgent):
     """Researches and recommends activities and experiences using web search."""
 
+    default_category = "activity"
+
     @property
     def agent_name(self) -> str:
         return "Activities Agent"

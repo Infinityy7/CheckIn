@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { ProfileDrawer } from './ProfileDrawer'
 import { api, ApiError } from '../services/api'
-import type { CharacterProfile } from '../types'
+import type { CharacterProfile, CompanionLink } from '../types'
 
 const profile: CharacterProfile = {
   id: 'character:test', version: 3, summary: 'A thoughtful food traveler who values culture and quiet discoveries.',
@@ -12,6 +12,15 @@ const profile: CharacterProfile = {
   }, rawAnswers: {}, createdAt: '2026-07-01T00:00:00Z', updatedAt: '2026-07-02T00:00:00Z',
 }
 
+const noLinks = { incoming: [], outgoing: [] }
+const invitation: CompanionLink = {
+  link_id: 'link-1', username: 'ora', name: 'Ora Ganizer', status: 'pending', created_at: '2026-09-01T10:00:00Z', responded_at: null,
+}
+const sharedByMember: CompanionLink = {
+  link_id: 'link-2', username: 'sam', name: null, status: 'accepted', created_at: '2026-08-30T10:00:00Z', responded_at: '2026-08-31T10:00:00Z',
+}
+
+beforeEach(() => vi.spyOn(api, 'companionLinks').mockResolvedValue(noLinks))
 afterEach(() => vi.restoreAllMocks())
 
 it('edits structured ranking weights and hard boundaries without exposing JSON', async () => {
@@ -53,4 +62,48 @@ it('shows the companions empty state when none are saved', async () => {
   render(<ProfileDrawer open profile={profile} onClose={vi.fn()} onUpdate={vi.fn()} onRetake={vi.fn()} />)
 
   expect(await screen.findByText('No companions saved yet.')).toBeInTheDocument()
+  expect(await screen.findByText(/No linked companions yet/)).toBeInTheDocument()
+})
+
+it('accepts an incoming travel invitation from the companions section', async () => {
+  vi.spyOn(api, 'profileOverview').mockResolvedValue({ sketch: null, cotravellers: [] })
+  vi.spyOn(api, 'companionLinks').mockResolvedValue({ incoming: [invitation], outgoing: [] })
+  const respond = vi.spyOn(api, 'respondCompanionLink').mockResolvedValue({ ...invitation, status: 'accepted', responded_at: '2026-09-02T09:00:00Z' })
+  render(<ProfileDrawer open profile={profile} onClose={vi.fn()} onUpdate={vi.fn()} onRetake={vi.fn()} />)
+
+  expect(await screen.findByText('@ora')).toBeInTheDocument()
+  expect(screen.getByText(/Ora Ganizer · wants to plan trips with your taste profile/)).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: /accept/i }))
+
+  await waitFor(() => expect(respond).toHaveBeenCalledWith('link-1', 'accept'))
+  expect(await screen.findByText('Can plan with your profile')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /accept/i })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Stop sharing your profile with @ora' })).toBeInTheDocument()
+})
+
+it('declines an invitation and lists companions who share their profile with you', async () => {
+  vi.spyOn(api, 'profileOverview').mockResolvedValue({ sketch: null, cotravellers: [] })
+  vi.spyOn(api, 'companionLinks').mockResolvedValue({ incoming: [invitation], outgoing: [sharedByMember] })
+  const respond = vi.spyOn(api, 'respondCompanionLink').mockResolvedValue({ ...invitation, status: 'declined', responded_at: '2026-09-02T09:00:00Z' })
+  render(<ProfileDrawer open profile={profile} onClose={vi.fn()} onUpdate={vi.fn()} onRetake={vi.fn()} />)
+
+  expect(await screen.findByText('Share their profile with you')).toBeInTheDocument()
+  expect(screen.getByText('@sam')).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: /decline/i }))
+
+  await waitFor(() => expect(respond).toHaveBeenCalledWith('link-1', 'decline'))
+  await waitFor(() => expect(screen.queryByText('@ora')).not.toBeInTheDocument())
+  expect(screen.getByText('@sam')).toBeInTheDocument()
+  expect(screen.queryByText(/No linked companions yet/)).not.toBeInTheDocument()
+})
+
+it('reports a failed invitation response and keeps the invitation actionable', async () => {
+  vi.spyOn(api, 'profileOverview').mockResolvedValue({ sketch: null, cotravellers: [] })
+  vi.spyOn(api, 'companionLinks').mockResolvedValue({ incoming: [invitation], outgoing: [] })
+  vi.spyOn(api, 'respondCompanionLink').mockRejectedValue(new ApiError('Only the invited traveler can respond to this invitation', 403, 'FORBIDDEN'))
+  render(<ProfileDrawer open profile={profile} onClose={vi.fn()} onUpdate={vi.fn()} onRetake={vi.fn()} />)
+
+  fireEvent.click(await screen.findByRole('button', { name: /accept/i }))
+  expect(await screen.findByRole('alert')).toHaveTextContent(/Only the invited traveler/)
+  expect(screen.getByRole('button', { name: /accept/i })).toBeInTheDocument()
 })

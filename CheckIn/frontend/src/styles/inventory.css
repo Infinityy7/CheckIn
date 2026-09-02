@@ -213,3 +213,8 @@
   .inventory-skeleton { animation: none; }
   .inventory-toggle > svg:last-child, .flight-toggle > svg:last-child { transition: none; }
 }
+
+/* The cart is the single source of truth for a saved option; the saved row is quietly marked. */
+.rate-plan--saved, .flight-offer--saved { box-shadow: inset 3px 0 0 var(--brand); }
+.cart-notice { display: flex; align-items: start; gap: 8px; margin: 10px 0; padding: 10px 12px; border: 1px solid var(--panel-line); border-radius: var(--r-s); background: transparent; color: var(--panel-ink); font-size: 12px; line-height: 1.45; }
+.cart-notice svg { flex: 0 0 auto; width: 14px; height: 14px; color: var(--panel-muted); }

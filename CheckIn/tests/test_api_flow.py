@@ -125,7 +125,12 @@ A balanced traveler who values local food and quieter cultural experiences.
         "budget_amount": 3200, "currency": "USD", "vibes": ["culture", "food", "nature"],
         "group_type": "couple", "num_travelers": 2, "cotravellers": [],
     })
+    assert trip.status_code == 200, trip.text
     trip_id = trip.json()["trip_id"]
+    assert trip.json()["status"] == "received"
+    assert trip.json()["replayed"] is False
+    # LLM calls are stubbed out in unit tests, so the advisory check fails open
+    assert trip.json()["feasibility"]["verdict"] == "unchecked"
     research = client.post(f"/api/trip/{trip_id}/research", headers=headers)
     assert research.status_code == 200
     assert '"event": "all_complete"' in research.text
@@ -161,10 +166,23 @@ A balanced traveler who values local food and quieter cultural experiences.
     saved = client.get(f"/api/trip/{trip_id}", headers=headers).json()
     assert saved["itinerary"]["trip_title"] == "Kyoto Between Lanterns"
 
+    async def never_called_builder(*_args, **_kwargs):
+        raise AssertionError("an unchanged selection set must replay the stored itinerary")
+
+    monkeypatch.setattr(main, "generate_itinerary", never_called_builder)
+    replayed = client.post(f"/api/trip/{trip_id}/itinerary", headers=headers)
+    assert replayed.status_code == 200
+    assert '"event": "itinerary_complete"' in replayed.text
+    assert '"replayed": true' in replayed.text
+
     async def failed_itinerary_builder(*_args, **_kwargs):
         raise RuntimeError("provider-secret-that-must-not-reach-the-browser")
 
     monkeypatch.setattr(main, "generate_itinerary", failed_itinerary_builder)
+    # Unchanged selections replay the stored itinerary without a model call, so
+    # a changed selection set is what forces the real (failing) rebuild below.
+    client.post(f"/api/trip/{trip_id}/select", headers=headers, json={"selections": selected_ids[:3]})
+    assert client.get(f"/api/trip/{trip_id}", headers=headers).json()["itinerary"] is None
     failed_generation = client.post(
         f"/api/trip/{trip_id}/itinerary",
         headers={**headers, "X-Request-ID": "itinerary-test-request"},
@@ -303,6 +321,8 @@ def test_partial_research_retry_runs_only_missing_category(tmp_path, monkeypatch
             "cotravellers": [],
         },
     )
+    assert trip.status_code == 200, trip.text
+    assert trip.json()["status"] == "received"
     trip_id = trip.json()["trip_id"]
 
     first = client.post(f"/api/trip/{trip_id}/research", headers=headers)

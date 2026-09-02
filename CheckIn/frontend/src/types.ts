@@ -17,10 +17,34 @@ export interface RegisterPayload {
   phone?: string
 }
 
+export type CompanionLinkStatus = 'none' | 'pending' | 'accepted' | 'declined' | 'revoked'
+
 export interface UserLookup {
   username: string
   name: string | null
   intake_complete: boolean
+  /** Invitation state from the caller's side; only 'accepted' lets research use their profile. */
+  link_status: CompanionLinkStatus
+}
+
+/** One invitation row; names the other traveler and never carries a profile. */
+export interface CompanionLink {
+  link_id: string
+  username: string
+  name: string | null
+  status: Exclude<CompanionLinkStatus, 'none'>
+  created_at: string
+  responded_at: string | null
+}
+
+export interface CompanionLinks {
+  incoming: CompanionLink[]
+  outgoing: CompanionLink[]
+}
+
+export interface CompanionChatTranscript {
+  turns: Array<{ from: 'tavi' | 'user'; text: string }>
+  done: boolean
 }
 
 export interface CharacterTraits {
@@ -118,6 +142,34 @@ export interface PendingCheckInTrip {
 export interface PostTripFeedbackResponse {
   postTrip: PostTripState
   profile: CharacterProfile
+}
+
+export interface SuggestedChanges {
+  budget_amount?: number | null
+  end_date?: string | null
+  destination?: string | null
+}
+
+/** Advisory sanity check on a trip request; it never blocks creation. */
+export interface FeasibilityReport {
+  verdict: 'ok' | 'tight' | 'unrealistic' | 'unchecked'
+  confidence: number
+  reason: string
+  suggestion_text: string
+  suggested_changes: SuggestedChanges
+}
+
+export interface TripCreateOptions {
+  idempotencyKey: string
+  acknowledgeFeasibility?: boolean
+}
+
+/** `held` means no trip was created: the traveler must revise or acknowledge the feasibility warning. */
+export interface TripCreateResult {
+  trip_id: string | null
+  status: 'received' | 'held'
+  replayed: boolean
+  feasibility?: FeasibilityReport
 }
 
 export interface TripPreferences {
@@ -253,6 +305,8 @@ export interface TripCartItem {
 
 export interface TripCart {
   tripId: string
+  /** Bumped by the backend on every mutation; pass it back as expectedVersion to refuse stale writes. */
+  version?: number
   state: 'open' | 'revalidating' | 'ready' | 'checkout' | 'confirmed' | 'partial' | 'error'
   items: TripCartItem[]
   /** Saved-cart expiry is a UI/session lifetime only; it never promises supplier inventory. */

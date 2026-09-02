@@ -12,9 +12,12 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Header
+from fastapi import Query
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 import auth
@@ -22,6 +25,12 @@ import api_errors
 import db
 import profiles
 from config import ALLOWED_ORIGINS, LOG_LEVEL, SSE_HEARTBEAT_SECONDS
+from companions import (
+    CompanionInviteInput,
+    guest_companion_profiles,
+    linked_companion_profiles,
+    validate_trip_companions,
+)
 from inventory.models import AddCartItemInput, Cart, FlightInventory, HotelInventory
 from inventory.providers import (
     InventoryProviderError,
@@ -34,6 +43,8 @@ from inventory.service import (
     close_inventory_service,
     get_inventory_service,
 )
+from feasibility import check_feasibility
+from inventory.service import CartVersionConflict, exact_cart_choices
 from itinerary import generate_itinerary
 from llm_client import get_llm_health, is_fatal_error
 from orchestrator import ALL_AGENT_NAMES, generate_context_brief, run_agents_streaming
@@ -59,6 +70,9 @@ from schemas import (
     TripPreferences,
     TripState,
 )
+from schemas import IDEMPOTENCY_KEY_PATTERN, CreateTripInput, FeasibilityReport
+from store import get_trip_by_idempotency_key
+from store import ItineraryAlreadyRunning, finish_itinerary, selection_fingerprint, start_itinerary
 from store import (
     ResearchAlreadyRunning,
     add_agent_result,
@@ -165,6 +179,32 @@ def _selected_recommendations(state: TripState) -> list[Recommendation]:
     ]
 
 
+_SSE_HEADERS = {
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+}
+
+
+def _conflict_response(request: Request, *, code: str, message: str) -> JSONResponse:
+    """A 409 with a specific public code (the generic handler only knows CONFLICT)."""
+    return JSONResponse(
+        status_code=409,
+        content=api_errors.problem(request, code=code, message=message, retryable=True),
+        headers={api_errors.REQUEST_ID_HEADER: api_errors.request_id_for(request)},
+    )
+
+
+def _stored_itinerary(raw: dict, fingerprint: str) -> Itinerary | None:
+    """Return the saved itinerary only when it was built from the current inputs."""
+    if not raw.get("itinerary") or raw.get("itinerary_fingerprint") != fingerprint:
+        return None
+    try:
+        return Itinerary.model_validate(raw["itinerary"])
+    except ValueError:
+        return None
+
+
 def _adjustment_rows(before: dict, after: dict, deltas: dict[str, float]) -> list[dict]:
     before_vibes = before.get("vibe_weights", {})
     after_vibes = after.get("vibe_weights", {})
@@ -261,8 +301,8 @@ async def me(user_id: str = Depends(auth.get_current_user)) -> dict:
 
 
 @app.get("/api/users/lookup")
-async def lookup_user(username: str, _user_id: str = Depends(auth.get_current_user)) -> dict:
-    """Resolve a username to the minimum needed to add them as a co-traveller."""
+async def lookup_user(username: str, user_id: str = Depends(auth.get_current_user)) -> dict:
+    """Resolve a username to the minimum needed to invite them as a co-traveller."""
     record = db.get_user_by_username(username)
     if record is None:
         raise HTTPException(status_code=404, detail=f"No CheckIn user named '@{username.strip().lstrip('@')}'")
@@ -270,7 +310,85 @@ async def lookup_user(username: str, _user_id: str = Depends(auth.get_current_us
         "username": record["username"],
         "name": record["name"],
         "intake_complete": profiles.load_sketch(record["user_id"]) is not None,
+        "link_status": db.companion_link_status(user_id, record["user_id"]),
     }
+
+
+# --- Companion invitations ---
+
+def _companion_link_view(link: dict, viewer_id: str) -> dict:
+    """Public row for the viewer: names the other traveler, never their profile."""
+    counterpart_id = (
+        link["invitee_user_id"] if link["inviter_user_id"] == viewer_id else link["inviter_user_id"]
+    )
+    counterpart = db.get_user_by_id(counterpart_id) or {}
+    return {
+        "link_id": link["link_id"],
+        "username": counterpart.get("username"),
+        "name": counterpart.get("name"),
+        "status": link["status"],
+        "created_at": link["created_at"],
+        "responded_at": link["responded_at"],
+    }
+
+
+def _respond_to_companion_link(link_id: str, user_id: str, status: str) -> dict:
+    link = db.get_companion_link_by_id(link_id)
+    if link is None:
+        raise HTTPException(status_code=404, detail="Invitation not found")
+    if link["invitee_user_id"] != user_id:
+        raise HTTPException(
+            status_code=403, detail="Only the invited traveler can respond to this invitation"
+        )
+    updated = db.respond_companion_link(link_id, user_id, status)
+    return _companion_link_view(updated or link, user_id)
+
+
+@app.get("/api/companions/links")
+async def companion_links(user_id: str = Depends(auth.get_current_user)) -> dict:
+    """Incoming and outgoing invitations from the caller's perspective."""
+    return db.list_companion_links(user_id)
+
+
+@app.post("/api/companions/links")
+async def invite_companion(
+    body: CompanionInviteInput, user_id: str = Depends(auth.get_current_user)
+) -> dict:
+    """Invite another account; a declined or revoked invitation becomes pending again."""
+    invitee = db.get_user_by_username(body.username)
+    if invitee is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No CheckIn user named '@{body.username.strip().lstrip('@')}'",
+        )
+    if invitee["user_id"] == user_id:
+        raise HTTPException(
+            status_code=400, detail="You can't invite yourself — add companions other than yourself"
+        )
+    link = db.create_or_reset_companion_link(user_id, invitee["user_id"])
+    return _companion_link_view(link, user_id)
+
+
+@app.post("/api/companions/links/{link_id}/accept")
+async def accept_companion_link(link_id: str, user_id: str = Depends(auth.get_current_user)) -> dict:
+    return _respond_to_companion_link(link_id, user_id, "accepted")
+
+
+@app.post("/api/companions/links/{link_id}/decline")
+async def decline_companion_link(link_id: str, user_id: str = Depends(auth.get_current_user)) -> dict:
+    return _respond_to_companion_link(link_id, user_id, "declined")
+
+
+@app.delete("/api/companions/links/{link_id}")
+async def remove_companion_link(link_id: str, user_id: str = Depends(auth.get_current_user)) -> dict:
+    """The inviter revokes, the invitee declines; either way the profile stops flowing."""
+    link = db.get_companion_link_by_id(link_id)
+    if link is None:
+        raise HTTPException(status_code=404, detail="Invitation not found")
+    if user_id not in (link["inviter_user_id"], link["invitee_user_id"]):
+        raise HTTPException(status_code=403, detail="This invitation belongs to other travelers")
+    updated = db.delete_companion_link(link_id, user_id)
+    return _companion_link_view(updated or link, user_id)
 
 
 # --- Profile endpoints ---
@@ -280,10 +398,22 @@ async def profile_chat(body: ChatInput, user_id: str = Depends(auth.get_current_
     """One turn of the intake conversation with Buddy.
 
     Send an empty message to start. When done=true, the sketch is saved.
-    Set cotraveller_name to build a co-traveller's sketch instead.
+    Set cotraveller_name to build a co-traveller's sketch instead. Resending
+    the same turn_key replays the stored reply instead of appending twice.
     """
-    reply, done = await profiles.chat_turn(user_id, body.message, body.cotraveller_name)
+    reply, done = await profiles.chat_turn(
+        user_id, body.message, body.cotraveller_name, turn_key=body.turn_key
+    )
     return {"reply": reply, "done": done}
+
+
+@app.get("/api/profile/chat")
+async def profile_chat_transcript(
+    cotraveller_name: str = Query(..., min_length=1, max_length=160),
+    user_id: str = Depends(auth.get_current_user),
+) -> dict:
+    """The saved guest intake thread, so a reload or server restart resumes it."""
+    return profiles.guest_chat_transcript(user_id, cotraveller_name)
 
 
 @app.get("/api/profile")
@@ -409,42 +539,67 @@ async def character_feedback(
 
 @app.post("/api/trip/preferences")
 async def submit_preferences(
-    prefs: TripPreferences,
+    body: CreateTripInput,
     user_id: str = Depends(auth.get_current_user),
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
 ) -> dict:
-    """Accept trip preferences and create a new trip.
+    """Create exactly one trip after an advisory feasibility check.
 
-    Returns the trip_id used to reference this trip in all subsequent calls.
+    A repeated ``Idempotency-Key`` replays the stored trip without another
+    feasibility call. An ``unrealistic`` verdict holds the request (no trip
+    row) until the client resubmits with ``feasibility_acknowledged``.
     """
+    if idempotency_key is not None and not IDEMPOTENCY_KEY_PATTERN.fullmatch(idempotency_key):
+        raise HTTPException(
+            status_code=400,
+            detail="Idempotency-Key must be 8-128 characters of letters, digits, '.', '_', ':' or '-'",
+        )
     # intake chat is required once before planning
     if profiles.load_sketch(user_id) is None:
         raise HTTPException(status_code=403, detail="Finish the intake chat first")
 
-    # only bring co-travellers that actually have sketches
-    for name in prefs.cotravellers:
-        if profiles.load_cotraveller(user_id, name) is None:
-            raise HTTPException(status_code=400, detail=f"No saved co-traveller named '{name}'")
+    prefs = body.to_preferences()
+    validate_trip_companions(user_id, prefs)
 
-    # username co-travellers must be real accounts with a completed taste profile
-    own_username = (db.get_user_by_id(user_id) or {}).get("username")
-    for username in prefs.cotraveller_usernames:
-        if own_username and username == own_username.lower():
-            raise HTTPException(status_code=400, detail="You are already on this trip — add companions other than yourself")
-        member = db.get_user_by_username(username)
-        if member is None:
-            raise HTTPException(status_code=400, detail=f"No CheckIn user named '@{username}'")
-        if profiles.load_sketch(member["user_id"]) is None:
-            raise HTTPException(
-                status_code=400,
-                detail=f"@{username} hasn't completed their taste profile yet — ask them to finish onboarding first",
-            )
+    if idempotency_key is not None:
+        existing = get_trip_by_idempotency_key(user_id, idempotency_key)
+        if existing is not None:
+            replayed_feasibility = existing.feasibility or FeasibilityReport(verdict="unchecked")
+            return {
+                "trip_id": existing.trip_id,
+                "status": "received",
+                "replayed": True,
+                "preferences": existing.preferences.model_dump(mode="json"),
+                "feasibility": replayed_feasibility.model_dump(mode="json"),
+            }
 
-    state = create_trip(prefs, user_id)
-    logger.info("Trip created: %s → %s", state.trip_id, prefs.destination)
+    if body.feasibility_acknowledged:
+        feasibility = FeasibilityReport(verdict="unchecked")
+    else:
+        feasibility = await check_feasibility(prefs)
+        if feasibility.verdict == "unrealistic":
+            logger.info("Trip held for %s: feasibility=unrealistic", prefs.destination)
+            return {
+                "trip_id": None,
+                "status": "held",
+                "replayed": False,
+                "preferences": prefs.model_dump(mode="json"),
+                "feasibility": feasibility.model_dump(mode="json"),
+            }
+
+    state = create_trip(prefs, user_id, idempotency_key=idempotency_key, feasibility=feasibility)
+    logger.info(
+        "Trip created: %s → %s feasibility=%s",
+        state.trip_id,
+        prefs.destination,
+        feasibility.verdict,
+    )
     return {
         "trip_id": state.trip_id,
         "status": "received",
+        "replayed": False,
         "preferences": prefs.model_dump(mode="json"),
+        "feasibility": feasibility.model_dump(mode="json"),
     }
 
 
@@ -515,13 +670,20 @@ async def add_trip_cart_item(
 async def remove_trip_cart_item(
     trip_id: str,
     item_id: str,
+    request: Request,
+    expected_version: int | None = Query(None, alias="expectedVersion", ge=1),
     user_id: str = Depends(auth.get_current_user),
     service: InventoryService = Depends(get_inventory_service),
 ) -> Cart:
-    """Remove one item from an owned trip's saved shortlist."""
+    """Remove one item from an owned trip's saved shortlist.
+
+    ``expectedVersion`` lets a client refuse to act on a cart it has not seen.
+    """
     state = _get_owned_trip(trip_id, user_id)
     try:
-        return service.remove_item(state, item_id)
+        return service.remove_item(state, item_id, expected_version=expected_version)
+    except CartVersionConflict as exc:
+        return _conflict_response(request, code=exc.code or "CONFLICT", message=str(exc))
     except InventoryDomainError as exc:
         _raise_inventory_failure(exc)
 
@@ -578,28 +740,16 @@ async def research_trip(
         brief_sketch, _ = profiles.parse_taste(raw_sketch)  # prose only, no json block
         user_taste = profiles.get_taste(user_id)
 
-    cotraveller_sketches = []
-    cotraveller_tastes = []
-    for name in state.preferences.cotravellers:
-        cot_raw = profiles.load_cotraveller(user_id, name)
-        if cot_raw:
-            cot_prose, _ = profiles.parse_taste(cot_raw)
-            cotraveller_sketches.append(cot_prose)
-        cot_taste = profiles.get_cotraveller_taste(user_id, name)
-        if cot_taste:
-            cotraveller_tastes.append(cot_taste)
-    # Username co-travellers contribute their own account's sketch and taste.
-    for username in getattr(state.preferences, "cotraveller_usernames", []) or []:
-        member = db.get_user_by_username(username)
-        if member is None:
-            continue
-        member_raw = profiles.load_sketch(member["user_id"])
-        if member_raw:
-            member_prose, _ = profiles.parse_taste(member_raw)
-            cotraveller_sketches.append(member_prose)
-        member_taste = profiles.get_taste(member["user_id"])
-        if member_taste:
-            cotraveller_tastes.append(member_taste)
+    guest_sketches, guest_tastes = guest_companion_profiles(
+        user_id, state.preferences.cotravellers
+    )
+    _linked_sketches, linked_tastes = linked_companion_profiles(
+        user_id, getattr(state.preferences, "cotraveller_usernames", []) or []
+    )
+    # The brief is streamed and stored for the organizer, so a linked member's
+    # prose never enters it; their compiled taste still shapes the ranking.
+    cotraveller_sketches = [*guest_sketches]
+    cotraveller_tastes = [*guest_tastes, *linked_tastes]
 
     try:
         # Acquire only after profile preparation, so a profile/database error
@@ -707,16 +857,17 @@ async def select_recommendations(
     # Validate IDs exist
     all_recs = get_all_recommendations(trip_id)
     valid_ids = {r.id for r in all_recs}
-    invalid = [sid for sid in body.selections if sid not in valid_ids]
+    selections = list(dict.fromkeys(body.selections))
+    invalid = [sid for sid in selections if sid not in valid_ids]
     if invalid:
         raise HTTPException(
             status_code=400,
             detail=f"Unknown recommendation IDs: {invalid}",
         )
 
-    set_selections(trip_id, body.selections)
-    logger.info("Trip %s: %d selections saved", trip_id, len(body.selections))
-    return {"status": "selections_saved", "count": len(body.selections)}
+    set_selections(trip_id, selections)
+    logger.info("Trip %s: %d selections saved", trip_id, len(selections))
+    return {"status": "selections_saved", "count": len(selections)}
 
 
 @app.post("/api/trip/{trip_id}/itinerary")
@@ -737,21 +888,48 @@ async def generate_trip_itinerary(
     if not state.research_results:
         raise HTTPException(status_code=400, detail="No research results — run /research first")
 
-    # Resolve selected recommendations
-    all_recs = get_all_recommendations(trip_id)
-    selected_ids = set(state.selections)
-    selected = [r for r in all_recs if r.id in selected_ids]
-
+    selected = _selected_recommendations(state)
     if not selected:
         raise HTTPException(status_code=400, detail="Selected IDs did not match any recommendations")
 
+    raw = db.load_trip_state(trip_id) or {}
+    fingerprint = selection_fingerprint(raw)
+    stored = _stored_itinerary(raw, fingerprint)
+    if stored is not None:
+        logger.info("Trip %s: replaying the stored itinerary for unchanged selections", trip_id)
+
+        async def replay_stream():
+            yield _sse({
+                "event": "itinerary_started",
+                "trip_id": trip_id,
+                "selection_count": len(selected),
+                "replayed": True,
+            })
+            yield _sse({
+                "event": "itinerary_complete",
+                "itinerary": stored.model_dump(mode="json"),
+                "replayed": True,
+            })
+
+        return StreamingResponse(replay_stream(), media_type="text/event-stream", headers=_SSE_HEADERS)
+
+    try:
+        lease_id = start_itinerary(trip_id)
+    except ItineraryAlreadyRunning:
+        return _conflict_response(
+            request,
+            code="ITINERARY_IN_PROGRESS",
+            message="An itinerary is already being generated for this trip. Wait for it to finish before building again.",
+        )
+
+    exact_choices = exact_cart_choices(raw)
     context_brief = state.context_brief or ""
 
     async def event_stream():
         yield _sse({"event": "itinerary_started", "trip_id": trip_id, "selection_count": len(selected)})
 
         task = asyncio.create_task(
-            generate_itinerary(state.preferences, context_brief, selected)
+            generate_itinerary(state.preferences, context_brief, selected, exact_choices=exact_choices)
         )
         try:
             while not task.done():
@@ -762,7 +940,7 @@ async def generate_trip_itinerary(
                 if not done:
                     yield _sse({"event": "heartbeat"})
             itinerary = await task
-            set_itinerary(trip_id, itinerary)
+            set_itinerary(trip_id, itinerary, lease_id, fingerprint)
             yield _sse({
                 "event": "itinerary_complete",
                 "itinerary": itinerary.model_dump(mode="json"),
@@ -788,6 +966,7 @@ async def generate_trip_itinerary(
             if not task.done():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
+            finish_itinerary(trip_id, lease_id)
 
     return StreamingResponse(
         event_stream(),

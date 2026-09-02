@@ -35,6 +35,10 @@ RETRY_CORRECTION = (
 class BaseAgent(ABC):
     """Subclasses supply prompts; this class owns validation and ranking."""
 
+    # Every specialist produces exactly one category, so a candidate that
+    # arrives without one is repairable instead of a dropped 16k-token answer.
+    default_category: str | None = None
+
     @property
     @abstractmethod
     def agent_name(self) -> str:
@@ -49,6 +53,16 @@ class BaseAgent(ABC):
     def build_user_prompt(self, prefs: TripPreferences, context_brief: str) -> str:
         """Build the user message for this agent."""
 
+    async def prepare_context(self, prefs: TripPreferences, context_brief: str) -> str:
+        """Hook for subclasses to enrich the shared brief before prompting."""
+        return context_brief
+
+    cache_skip_reason: str = ""
+
+    def cacheable_result(self) -> bool:
+        """Hook: return False when this run's result must not be stored."""
+        return True
+
     async def run(
         self,
         prefs: TripPreferences,
@@ -59,7 +73,6 @@ class BaseAgent(ABC):
         force_refresh: bool = False,
     ) -> AgentResult:
         """Call the LLM (or serve a taste-similar cached result), validate, rank."""
-        user_prompt = self.build_user_prompt(prefs, context_brief)
         last_error: Exception | None = None
 
         cache = get_research_cache()
@@ -72,6 +85,9 @@ class BaseAgent(ABC):
                 agent_name=self.agent_name,
                 operation="research",
                 use_search=True,
+                context_brief=context_brief,
+                user_taste=user_taste,
+                cotraveller_tastes=cotraveller_tastes,
             )
             taste_vector = build_taste_vector(user_taste, cotraveller_tastes)
             if not force_refresh:
@@ -84,6 +100,10 @@ class BaseAgent(ABC):
                             self.agent_name, int(hit.age_seconds), hit.similarity,
                         )
                         return served
+
+        # runs after the cache lookup so a hit never pays for context enrichment
+        context_brief = await self.prepare_context(prefs, context_brief)
+        user_prompt = self.build_user_prompt(prefs, context_brief)
 
         for attempt in range(1, MAX_AGENT_RETRIES + 1):
             prompt = user_prompt
@@ -137,13 +157,18 @@ class BaseAgent(ABC):
                 self.agent_name, len(ranked), len(top), top[0].name, top[0].score,
             )
             if cache.enabled and exact_key is not None:
-                cache.store(
-                    exact_key,
-                    request_facts or {},
-                    taste_vector or [],
-                    [rec.model_dump(mode="json") for rec in candidates],
-                    model=call_meta.get("model", ""),
-                )
+                if self.cacheable_result():
+                    cache.store(
+                        exact_key,
+                        request_facts or {},
+                        taste_vector or [],
+                        [rec.model_dump(mode="json") for rec in candidates],
+                        model=call_meta.get("model", ""),
+                    )
+                else:
+                    logger.info(
+                        "[%s] result not cached: %s", self.agent_name, self.cache_skip_reason
+                    )
             return AgentResult(agent_name=self.agent_name, recommendations=top)
 
         raise RuntimeError(
@@ -200,6 +225,14 @@ class BaseAgent(ABC):
         seen_names: set[str] = set()
 
         for item in raw_recs:
+            if isinstance(item, dict) and self.default_category:
+                category = item.get("category")
+                if category and category != self.default_category:
+                    logger.info(
+                        "[%s] overriding category %r with '%s'",
+                        self.agent_name, category, self.default_category,
+                    )
+                item["category"] = self.default_category
             try:
                 rec = Recommendation(**item)
             except Exception as exc:

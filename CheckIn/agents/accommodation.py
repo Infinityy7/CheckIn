@@ -9,6 +9,8 @@ from .base import BaseAgent
 class AccommodationAgent(BaseAgent):
     """Researches and recommends accommodation options using web search."""
 
+    default_category = "hotel"
+
     @property
     def agent_name(self) -> str:
         return "Accommodation Agent"

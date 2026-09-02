@@ -9,6 +9,8 @@ from .base import BaseAgent
 class RestaurantAgent(BaseAgent):
     """Researches and recommends dining experiences using web search."""
 
+    default_category = "restaurant"
+
     @property
     def agent_name(self) -> str:
         return "Restaurant Agent"

@@ -279,8 +279,8 @@ def test_selection_and_past_trip_rating_learning_are_idempotent(api_client, monk
         json={
             "destination": "Kyoto",
             "origin": "Mumbai",
-            "start_date": "2026-01-10",
-            "end_date": "2026-01-11",
+            "start_date": "2026-10-12",
+            "end_date": "2026-10-13",
             "budget_amount": 2200,
             "currency": "USD",
             "vibes": ["food", "nature"],
@@ -291,6 +291,12 @@ def test_selection_and_past_trip_rating_learning_are_idempotent(api_client, monk
     )
     assert trip.status_code == 200, trip.text
     trip_id = trip.json()["trip_id"]
+    # New trips must start in the future; the post-trip check-in below needs a
+    # finished trip, so move the stored dates back to match the itinerary fixture.
+    db.mutate_trip_state(
+        trip_id,
+        lambda state: state["preferences"].update({"start_date": "2026-01-10", "end_date": "2026-01-11"}),
+    )
 
     research = api_client.post(f"/api/trip/{trip_id}/research", headers=headers)
     assert research.status_code == 200

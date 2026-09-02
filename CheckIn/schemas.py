@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 from enum import Enum
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from personalization import (
     CANDIDATE_DEALBREAKER_TAGS,
@@ -46,24 +53,39 @@ CURRENCY_TO_USD = {
 
 
 MAX_TRIP_DAYS = 30
+MAX_PLACE_NAME_LENGTH = 120
+MAX_COTRAVELLER_NAME_LENGTH = 80
+IDEMPOTENCY_KEY_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
+
+CotravellerName = Annotated[str, StringConstraints(max_length=MAX_COTRAVELLER_NAME_LENGTH)]
+CotravellerUsername = Annotated[str, StringConstraints(max_length=40)]
 
 
 class TripPreferences(BaseModel):
     """User-submitted trip preferences that drive all agent research."""
-    destination: str = Field(..., min_length=1, description="City or region to visit")
-    origin: str = Field(..., min_length=1, description="Where the traveler is starting from")
+    destination: str = Field(
+        ..., min_length=1, max_length=MAX_PLACE_NAME_LENGTH, description="City or region to visit"
+    )
+    origin: str = Field(
+        ..., min_length=1, max_length=MAX_PLACE_NAME_LENGTH,
+        description="Where the traveler is starting from",
+    )
     start_date: date
     end_date: date
-    budget_amount: float = Field(..., gt=0, description="Total budget for the whole trip, all travelers")
-    currency: str = Field("USD", description="Currency code for budget_amount")
-    vibes: list[str] = Field(..., description="Interest tags from the allowed set")
+    budget_amount: float = Field(
+        ..., gt=0, allow_inf_nan=False, description="Total budget for the whole trip, all travelers"
+    )
+    currency: str = Field("USD", max_length=12, description="Currency code for budget_amount")
+    vibes: list[str] = Field(
+        ..., max_length=len(ALLOWED_VIBES), description="Interest tags from the allowed set"
+    )
     group_type: GroupType
     num_travelers: int = Field(..., ge=1, le=50)
-    cotravellers: list[str] = Field(
+    cotravellers: list[CotravellerName] = Field(
         default_factory=list,
         description="Saved guest co-traveller names to bring on this trip",
     )
-    cotraveller_usernames: list[str] = Field(
+    cotraveller_usernames: list[CotravellerUsername] = Field(
         default_factory=list,
         description="CheckIn usernames of account-holding co-travellers",
     )
@@ -96,6 +118,48 @@ class TripPreferences(BaseModel):
         return self
 
 
+class CreateTripInput(TripPreferences):
+    """POST body for /trip/preferences.
+
+    Only new trips reject past dates: stored trips must stay loadable after
+    they have happened, so the rule lives here rather than on TripPreferences.
+    """
+    feasibility_acknowledged: bool = Field(
+        False, description="Set after the traveler has seen an 'unrealistic' verdict and wants to proceed"
+    )
+
+    @model_validator(mode="after")
+    def check_dates_are_upcoming(self) -> "CreateTripInput":
+        today = datetime.now(timezone.utc).date()
+        if self.start_date < today:
+            raise ValueError(
+                f"start_date {self.start_date.isoformat()} is in the past; "
+                f"trips must start on or after {today.isoformat()} (UTC)"
+            )
+        return self
+
+    def to_preferences(self) -> TripPreferences:
+        return TripPreferences.model_validate(
+            self.model_dump(exclude={"feasibility_acknowledged"})
+        )
+
+
+class SuggestedChanges(BaseModel):
+    """The smallest edits that would make a request workable; all optional."""
+    budget_amount: Optional[float] = Field(None, gt=0, description="Suggested budget in the request's own currency")
+    end_date: Optional[date] = None
+    destination: Optional[str] = None
+
+
+class FeasibilityReport(BaseModel):
+    """Advisory sanity check on a trip request. It never blocks creation."""
+    verdict: Literal["ok", "tight", "unrealistic", "unchecked"]
+    confidence: float = Field(0, ge=0, le=1)
+    reason: str = ""
+    suggestion_text: str = ""
+    suggested_changes: SuggestedChanges = Field(default_factory=SuggestedChanges)
+
+
 # --- Agent output schemas ---
 
 class Recommendation(BaseModel):
@@ -106,9 +170,9 @@ class Recommendation(BaseModel):
     description: str = Field(..., description="2-3 compelling, specific sentences")
     reasoning: str = Field(..., description="Why this fits the user's preferences")
     estimated_cost: str = Field(..., description="Human-readable price range, e.g. '$120-$180 per night'")
-    cost_min: float = Field(0, ge=0, description="Low end of the cost estimate in USD")
-    cost_max: float = Field(0, ge=0, description="High end of the cost estimate in USD")
-    rating: float = Field(..., ge=0, le=5, description="Rating out of 5 from web research")
+    cost_min: float = Field(0, ge=0, allow_inf_nan=False, description="Low end of the cost estimate in USD")
+    cost_max: float = Field(0, ge=0, allow_inf_nan=False, description="High end of the cost estimate in USD")
+    rating: float = Field(..., ge=0, le=5, allow_inf_nan=False, description="Rating out of 5 from web research")
     review_count: int = Field(0, ge=0, description="Approximate number of reviews behind the rating")
     location: str = Field(..., description="Neighborhood or area within destination")
     image_search_query: str = Field(..., description="Query to find a representative photo")
@@ -136,8 +200,14 @@ class Recommendation(BaseModel):
 
     # these get filled in by ranking.py, not the LLM
     rank: int = Field(0, description="1 = best. Assigned by our ranking algorithm, not the LLM")
-    score: float = Field(0.0, description="Composite 0..1 score from the ranking algorithm")
+    score: float = Field(0.0, allow_inf_nan=False, description="Composite 0..1 score from the ranking algorithm")
     score_breakdown: dict = Field(default_factory=dict, description="Per-signal scores: rating/vibes/budget/total")
+
+    @model_validator(mode="after")
+    def order_cost_range(self) -> "Recommendation":
+        if self.cost_max < self.cost_min:
+            self.cost_min, self.cost_max = self.cost_max, self.cost_min
+        return self
 
     @field_validator("vibe_tags")
     @classmethod
@@ -281,9 +351,14 @@ class LoginInput(BaseModel):
 
 class ChatInput(BaseModel):
     """POST body for one turn of the profile intake chat."""
-    message: str = ""
+    message: str = Field("", max_length=2000)
     cotraveller_name: Optional[str] = Field(
         None, description="Set to build a co-traveller's sketch instead of the user's"
+    )
+    turn_key: Optional[str] = Field(
+        None,
+        max_length=128,
+        description="Client id for this answer; resending it replays the stored reply",
     )
 
 
@@ -341,4 +416,6 @@ class TripState(BaseModel):
     itinerary: Optional[Itinerary] = None
     post_trip: Optional[PostTripState] = Field(None, alias="postTrip")
     research_in_progress: bool = False
+    idempotency_key: Optional[str] = None
+    feasibility: Optional[FeasibilityReport] = None
     created_at: str

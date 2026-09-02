@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import math
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
@@ -89,15 +90,59 @@ def _budget_bucket(amount: float) -> int:
     return int(math.floor(math.log(max(float(amount), 0.01)) / math.log(1.0 + pct)))
 
 
+KEY_VERSION = 2
+PROMPT_SCHEMA_VERSION = 1
+_PRUNE_INTERVAL_SECONDS = 60.0
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _supplier_mode() -> str:
+    try:
+        from inventory.service import get_inventory_service
+
+        mode = get_inventory_service().provider.source_mode
+    except Exception:
+        return "unavailable"
+    return str(getattr(mode, "value", mode))
+
+
+def prompt_fingerprint(
+    context_brief: str,
+    user_taste: dict | None,
+    cotraveller_tastes: list[dict] | None,
+) -> str:
+    """Opaque hash of everything profile-derived that reaches the prompt."""
+    digest = hashlib.sha256()
+    for part in (
+        context_brief or "",
+        _canonical_json(user_taste),
+        _canonical_json(cotraveller_tastes),
+    ):
+        digest.update(part.encode("utf-8"))
+        digest.update(b"\x00")
+    return digest.hexdigest()
+
+
 def exact_request_key(
     prefs: Any,
     *,
     agent_name: str,
     operation: str,
     use_search: bool,
+    context_brief: str,
+    user_taste: dict | None,
+    cotraveller_tastes: list[dict] | None,
 ) -> tuple[str, dict]:
     facts = {
-        "key_version": 1,
+        "key_version": KEY_VERSION,
+        "prompt_schema_version": PROMPT_SCHEMA_VERSION,
+        "supplier_mode": _supplier_mode(),
+        "prompt_fingerprint": prompt_fingerprint(
+            context_brief, user_taste, cotraveller_tastes
+        ),
         "destination": prefs.destination.strip().lower(),
         "origin": prefs.origin.strip().lower(),
         "start_date": prefs.start_date.isoformat(),
@@ -140,10 +185,15 @@ class ResearchCacheBackend(Protocol):
         expire_before: datetime,
     ) -> None: ...
 
+    def prune(self, expire_before: datetime) -> int: ...
+
 
 class SqlResearchCacheBackend:
     def fetch(self, exact_key: str) -> list[dict]:
         return db.research_cache_fetch(exact_key)
+
+    def prune(self, expire_before: datetime) -> int:
+        return db.research_cache_prune(expire_before)
 
     def put(
         self,
@@ -182,14 +232,35 @@ class ResearchCache:
         self.misses = 0
         self.stores = 0
         self.errors = 0
+        self.pruned = 0
+        self._last_prune_at: float | None = None
 
     @property
     def enabled(self) -> bool:
         return LLM_CACHE_ENABLED
 
+    def prune_expired(self) -> None:
+        """Delete every expired row, whatever key it was stored under."""
+        prune = getattr(self._backend, "prune", None)
+        self._last_prune_at = time.monotonic()
+        if prune is None:
+            return
+        expire_before = datetime.now(timezone.utc) - timedelta(seconds=CACHE_TTL_SECONDS)
+        try:
+            self.pruned += int(prune(expire_before) or 0)
+        except Exception as exc:
+            self.errors += 1
+            logger.warning("research cache prune failed: %s", type(exc).__name__)
+
+    def _prune_if_due(self) -> None:
+        last = self._last_prune_at
+        if last is None or time.monotonic() - last >= _PRUNE_INTERVAL_SECONDS:
+            self.prune_expired()
+
     def lookup(self, exact_key: str, taste_vector: list[float]) -> CacheHit | None:
         if not self.enabled:
             return None
+        self._prune_if_due()
         try:
             rows = self._backend.fetch(exact_key)
         except Exception as exc:
@@ -245,6 +316,7 @@ class ResearchCache:
     ) -> None:
         if not self.enabled or not recommendations:
             return
+        self.prune_expired()
         expire_before = datetime.now(timezone.utc) - timedelta(seconds=CACHE_TTL_SECONDS)
         try:
             self._backend.put(
@@ -281,4 +353,5 @@ def get_cache_stats() -> dict:
         "misses": cache.misses,
         "stores": cache.stores,
         "errors": cache.errors,
+        "pruned": cache.pruned,
     }

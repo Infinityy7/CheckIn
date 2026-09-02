@@ -106,6 +106,13 @@ frontend_unit_with_coverage() {
     --coverage.thresholds.lines="$FRONTEND_COVERAGE_MIN")
 }
 
+# The committed static/ bundle must be byte-identical to a fresh build of the committed source.
+frontend_static_bundle_check() {
+  local fresh="$RUNTIME_DIR/static-check"
+  (cd "$FRONTEND_ROOT" && npx vite build --outDir "$fresh" --emptyOutDir) || return 1
+  diff -r "$PROJECT_ROOT/static" "$fresh"
+}
+
 if has_section security; then
   run_check secret-scan "$PYTHON" "$PROJECT_ROOT/scripts/scan_secrets.py" \
     --root "$REPO_ROOT" --output "$ARTIFACTS_DIR/secret-scan.json"
@@ -116,6 +123,10 @@ if has_section backend; then
     export COVERAGE_FILE="$ARTIFACTS_DIR/.coverage"
     run_check backend-tests env \
       ANTHROPIC_API_KEY=test-key-not-a-secret \
+      LLM_GATEWAY_ENABLED=false \
+      LLM_GATEWAY_API_KEY= \
+      INVENTORY_PROVIDER=unavailable \
+      APP_ENV=test \
       DATABASE_URL="sqlite+pysqlite:///$RUNTIME_DIR/backend.db" \
       "$PYTHON" -m coverage run \
       --source="$PROJECT_ROOT" \
@@ -137,6 +148,7 @@ if has_section frontend; then
   run_check frontend-lint npm --prefix "$FRONTEND_ROOT" run lint
   run_check frontend-typecheck npm --prefix "$FRONTEND_ROOT" run typecheck
   run_check frontend-unit frontend_unit_with_coverage
+  run_check static-bundle frontend_static_bundle_check
   run_check frontend-build npm --prefix "$FRONTEND_ROOT" run build
 fi
 
@@ -150,6 +162,10 @@ if has_section e2e; then
   run_check e2e-build npm --prefix "$FRONTEND_ROOT" run build
   run_check e2e env \
     ANTHROPIC_API_KEY=test-key-not-a-secret \
+    LLM_GATEWAY_ENABLED=false \
+    LLM_GATEWAY_API_KEY= \
+    INVENTORY_PROVIDER=unavailable \
+    APP_ENV=test \
     DATABASE_URL="sqlite+pysqlite:///$RUNTIME_DIR/e2e.db" \
     TRAVELBUDDY_E2E_ARTIFACTS="$ARTIFACTS_DIR/e2e-screenshots" \
     PLAYWRIGHT_HTML_OUTPUT_DIR="$ARTIFACTS_DIR/playwright-report" \

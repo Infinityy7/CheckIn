@@ -1,8 +1,8 @@
 import { act, type ComponentProps } from 'react'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { Workspace, type AgentStatus } from './Workspace'
-import type { Recommendation, TripPreferences } from '../types'
-import { api } from '../services/api'
+import type { HotelAvailability, Recommendation, TripCart, TripPreferences } from '../types'
+import { ApiError, api } from '../services/api'
 
 const preferences: TripPreferences = {
   destination: 'Kyoto',
@@ -36,11 +36,24 @@ const recommendation: Recommendation = {
   score_breakdown: {},
 }
 
+const restaurant: Recommendation = { ...recommendation, id: 'restaurant-1', name: 'Kappo Sora', category: 'restaurant' }
+const transport: Recommendation = { ...recommendation, id: 'transport-1', name: 'Complete journey', category: 'transport' }
+
 const allComplete: AgentStatus = {
   'Accommodation Agent': 'complete',
   'Activities Agent': 'complete',
   'Restaurant Agent': 'complete',
   'Transport Agent': 'complete',
+}
+
+const emptyCart: TripCart = { tripId: 'trip-1', version: 1, state: 'open', items: [], checkedAt: new Date().toISOString() }
+
+const twoRates: HotelAvailability = {
+  hotelId: 'supplier-hotel', recommendationId: recommendation.id, source: 'Demo inventory', sourceMode: 'demo', isLive: false,
+  checkedAt: new Date().toISOString(), rooms: [{ id: 'room-1', name: 'Garden room', occupancy: { adults: 2, children: 0, maxGuests: 2 }, beds: [{ type: 'king', count: 1 }], board: 'Room only', ratePlans: [
+    { id: 'rate-1', label: 'Flexible', total: { amount: 500, currency: 'USD' }, nightly: { amount: 250, currency: 'USD' }, taxesAndFees: { amount: 50, currency: 'USD' }, refundable: true, cancellationSummary: 'Free cancellation before arrival.', availabilityStatus: 'available', source: 'Demo inventory', sourceMode: 'demo', isLive: false },
+    { id: 'rate-2', label: 'Room only', total: { amount: 440, currency: 'USD' }, nightly: { amount: 220, currency: 'USD' }, taxesAndFees: { amount: 44, currency: 'USD' }, refundable: false, cancellationSummary: 'Non-refundable.', availabilityStatus: 'available', source: 'Demo inventory', sourceMode: 'demo', isLive: false },
+  ] }],
 }
 
 type WorkspaceProps = ComponentProps<typeof Workspace>
@@ -70,7 +83,7 @@ function renderWorkspace(overrides: Partial<WorkspaceProps> = {}) {
 const settle = () => act(async () => {})
 
 beforeEach(() => {
-  vi.spyOn(api, 'cart').mockResolvedValue({ tripId: 'trip-1', state: 'open', items: [], checkedAt: new Date().toISOString() })
+  vi.spyOn(api, 'cart').mockResolvedValue(emptyCart)
 })
 
 afterEach(() => vi.restoreAllMocks())
@@ -190,15 +203,9 @@ it('shows no group-fit chip for solo travellers', async () => {
   expect(screen.queryByText(/no-gos or diets/)).not.toBeInTheDocument()
 })
 
-it('selects the matching hotel when its eact room rate is added to the cart', async () => {
-  vi.spyOn(api, 'hotelRates').mockResolvedValue({
-    hotelId: 'supplier-hotel', recommendationId: recommendation.id, source: 'Demo inventory', sourceMode: 'demo', isLive: false,
-    checkedAt: new Date().toISOString(), rooms: [{ id: 'room-1', name: 'Garden room', occupancy: { adults: 2, children: 0, maxGuests: 2 }, beds: [{ type: 'king', count: 1 }], board: 'Room only', ratePlans: [{
-      id: 'rate-1', label: 'Fleible', total: { amount: 500, currency: 'USD' }, nightly: { amount: 250, currency: 'USD' }, taxesAndFees: { amount: 50, currency: 'USD' },
-      refundable: true, cancellationSummary: 'Free cancellation before arrival.', availabilityStatus: 'available', source: 'Demo inventory', sourceMode: 'demo', isLive: false,
-    }] }],
-  })
-  vi.spyOn(api, 'addCartItem').mockResolvedValue({ tripId: 'trip-1', state: 'open', items: [], checkedAt: new Date().toISOString() })
+it('selects the matching hotel when its exact room rate is added to the cart', async () => {
+  vi.spyOn(api, 'hotelRates').mockResolvedValue({ ...twoRates, rooms: [{ ...twoRates.rooms[0], ratePlans: [twoRates.rooms[0].ratePlans[0]] }] })
+  vi.spyOn(api, 'addCartItem').mockResolvedValue({ ...emptyCart, version: 2, items: [{ id: 'cart-rate-1', recommendationId: 'hotel-1', ratePlanId: 'rate-1', kind: 'hotel', title: 'A quiet Kyoto stay', status: 'quoted' }] })
   const { onToggle } = renderWorkspace()
   await settle()
 
@@ -206,11 +213,24 @@ it('selects the matching hotel when its eact room rate is added to the cart', as
   fireEvent.click(await screen.findByRole('button', { name: /Save quoted rate/i }))
 
   await waitFor(() => expect(onToggle).toHaveBeenCalledWith('hotel-1'))
+  expect(await screen.findByRole('button', { name: /Added/i })).toBeDisabled()
+})
+
+it('shows exactly one Added across two rate plans because the cart is the source of truth', async () => {
+  vi.spyOn(api, 'cart').mockResolvedValue({ ...emptyCart, version: 4, items: [{ id: 'cart-rate-2', recommendationId: 'hotel-1', ratePlanId: 'rate-2', kind: 'hotel', title: 'A quiet Kyoto stay', status: 'quoted' }] })
+  vi.spyOn(api, 'hotelRates').mockResolvedValue(twoRates)
+  renderWorkspace({ selections: ['hotel-1'] })
+  await settle()
+
+  fireEvent.click(screen.getByRole('button', { name: /Rooms & booking prices/i }))
+  await screen.findByText('Garden room')
+
+  expect(screen.getAllByRole('button', { name: /^Added$/i })).toHaveLength(1)
+  expect(screen.getByRole('button', { name: /Replace saved rate/i })).toBeEnabled()
 })
 
 it('saves restaurant choices in the unified cart before selecting them', async () => {
-  const restaurant: Recommendation = { ...recommendation, id: 'restaurant-1', name: 'Kappo Sora', category: 'restaurant' }
-  const cart = { tripId: 'trip-1', state: 'open' as const, checkedAt: new Date().toISOString(), items: [{ id: 'cart-restaurant-1', recommendationId: restaurant.id, kind: 'restaurant' as const, title: restaurant.name, status: 'saved' as const }] }
+  const cart: TripCart = { ...emptyCart, version: 2, items: [{ id: 'cart-restaurant-1', recommendationId: restaurant.id, kind: 'restaurant', title: restaurant.name, status: 'saved' }] }
   const add = vi.spyOn(api, 'addCartItem').mockResolvedValue(cart)
   const { onToggle } = renderWorkspace({ recommendations: [recommendation, restaurant] })
   await settle()
@@ -222,8 +242,78 @@ it('saves restaurant choices in the unified cart before selecting them', async (
   expect(onToggle).toHaveBeenCalledWith('restaurant-1')
 })
 
-it('selects an eact flight without also creating a generic transport cart item', async () => {
-  const transport: Recommendation = { ...recommendation, id: 'transport-1', name: 'Complete journey', category: 'transport' }
+it('does not select a restaurant when saving it to the cart fails', async () => {
+  const add = vi.spyOn(api, 'addCartItem').mockRejectedValue(new ApiError('Saved choices are unavailable right now.', 503, 'SERVICE_UNAVAILABLE', 'req-9', true))
+  const { onToggle } = renderWorkspace({ recommendations: [recommendation, restaurant] })
+  await settle()
+
+  fireEvent.click(screen.getByRole('tab', { name: /Food/i }))
+  fireEvent.click(screen.getByRole('button', { name: /Choose this/i }))
+
+  await waitFor(() => expect(add).toHaveBeenCalledOnce())
+  expect(await screen.findAllByText(/Saved choices are unavailable right now/)).not.toHaveLength(0)
+  expect(onToggle).not.toHaveBeenCalled()
+  expect(screen.getByRole('button', { name: /Choose this/i })).toBeEnabled()
+})
+
+it('deselects a restaurant when its cart item is removed from the cart panel', async () => {
+  const saved: TripCart = { ...emptyCart, version: 2, items: [{ id: 'cart-restaurant-1', recommendationId: restaurant.id, kind: 'restaurant', title: restaurant.name, status: 'saved' }] }
+  vi.spyOn(api, 'cart').mockResolvedValue(saved)
+  const remove = vi.spyOn(api, 'removeCartItem').mockResolvedValue({ ...emptyCart, version: 3 })
+  const { onToggle } = renderWorkspace({ recommendations: [recommendation, restaurant], selections: ['restaurant-1'] })
+  await settle()
+
+  fireEvent.click(screen.getByRole('button', { name: /Remove Kappo Sora from cart/i }))
+
+  await waitFor(() => expect(remove).toHaveBeenCalledWith('trip-1', 'cart-restaurant-1', 2))
+  await waitFor(() => expect(onToggle).toHaveBeenCalledWith('restaurant-1'))
+  expect(onToggle).toHaveBeenCalledOnce()
+})
+
+it('keeps a hotel selected when only its exact rate leaves the cart', async () => {
+  const saved: TripCart = { ...emptyCart, version: 2, items: [{ id: 'cart-rate-1', recommendationId: 'hotel-1', ratePlanId: 'rate-1', kind: 'hotel', title: 'A quiet Kyoto stay', status: 'quoted' }] }
+  vi.spyOn(api, 'cart').mockResolvedValue(saved)
+  const remove = vi.spyOn(api, 'removeCartItem').mockResolvedValue({ ...emptyCart, version: 3 })
+  const { onToggle } = renderWorkspace({ selections: ['hotel-1'] })
+  await settle()
+
+  fireEvent.click(screen.getByRole('button', { name: /Remove A quiet Kyoto stay from cart/i }))
+
+  await waitFor(() => expect(remove).toHaveBeenCalled())
+  await settle()
+  expect(onToggle).not.toHaveBeenCalled()
+})
+
+it('deselects a transport pick whose saved flight is removed, and removes the cart item when the card is deselected', async () => {
+  const saved: TripCart = { ...emptyCart, version: 2, items: [{ id: 'flight-item', recommendationId: transport.id, ratePlanId: 'offer-1', kind: 'flight', title: 'Quality Air QA101', status: 'quoted' }] }
+  vi.spyOn(api, 'cart').mockResolvedValue(saved)
+  const remove = vi.spyOn(api, 'removeCartItem').mockResolvedValue({ ...emptyCart, version: 3 })
+  const { onToggle } = renderWorkspace({ recommendations: [transport], selections: ['transport-1'] })
+  await settle()
+
+  fireEvent.click(screen.getByRole('button', { name: /Remove Quality Air QA101 from cart/i }))
+
+  await waitFor(() => expect(remove).toHaveBeenCalledWith('trip-1', 'flight-item', 2))
+  await waitFor(() => expect(onToggle).toHaveBeenCalledWith('transport-1'))
+  expect(onToggle).toHaveBeenCalledOnce()
+})
+
+it('deselecting a cart-backed card removes its cart item first and toggles exactly once', async () => {
+  const saved: TripCart = { ...emptyCart, version: 2, items: [{ id: 'cart-restaurant-1', recommendationId: restaurant.id, kind: 'restaurant', title: restaurant.name, status: 'saved' }] }
+  vi.spyOn(api, 'cart').mockResolvedValue(saved)
+  const remove = vi.spyOn(api, 'removeCartItem').mockResolvedValue({ ...emptyCart, version: 3 })
+  const { onToggle } = renderWorkspace({ recommendations: [recommendation, restaurant], selections: ['restaurant-1'] })
+  await settle()
+
+  fireEvent.click(screen.getByRole('button', { name: /Remove Kappo Sora from your docket/i }))
+
+  await waitFor(() => expect(remove).toHaveBeenCalledWith('trip-1', 'cart-restaurant-1', 2))
+  await waitFor(() => expect(onToggle).toHaveBeenCalledWith('restaurant-1'))
+  await settle()
+  expect(onToggle).toHaveBeenCalledOnce()
+})
+
+it('selects an exact flight without also creating a generic transport cart item', async () => {
   vi.spyOn(api, 'flightOffers').mockResolvedValue({
     recommendationId: transport.id, source: 'Controlled flights', sourceMode: 'test', isLive: false,
     checkedAt: new Date().toISOString(), offers: [{
@@ -233,7 +323,7 @@ it('selects an eact flight without also creating a generic transport cart item',
       source: 'Controlled flights', sourceMode: 'test', isLive: false,
     }],
   })
-  const cart = { tripId: 'trip-1', state: 'ready' as const, checkedAt: new Date().toISOString(), items: [{ id: 'flight-item', recommendationId: transport.id, ratePlanId: 'offer-1', kind: 'flight' as const, title: 'Quality Air QA101', status: 'quoted' as const }] }
+  const cart: TripCart = { ...emptyCart, version: 2, state: 'ready', items: [{ id: 'flight-item', recommendationId: transport.id, ratePlanId: 'offer-1', kind: 'flight', title: 'Quality Air QA101', status: 'quoted' }] }
   const add = vi.spyOn(api, 'addCartItem').mockResolvedValue(cart)
   const { onToggle } = renderWorkspace({ recommendations: [transport] })
   await settle()
@@ -244,4 +334,5 @@ it('selects an eact flight without also creating a generic transport cart item',
   await waitFor(() => expect(add).toHaveBeenCalledTimes(1))
   expect(add).toHaveBeenCalledWith('trip-1', 'transport-1', 'offer-1', 'flight')
   expect(onToggle).toHaveBeenCalledWith('transport-1')
+  expect(await screen.findByRole('button', { name: /Added/i })).toBeDisabled()
 })

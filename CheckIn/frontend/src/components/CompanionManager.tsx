@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { AlertCircle, ChevronRight, CircleCheck, Plus, X } from 'lucide-react'
+import { AlertCircle, ChevronRight, CircleCheck, Clock, Plus, RefreshCw, Send, X } from 'lucide-react'
 import type { UserLookup } from '../types'
 import { api, ApiError, userErrorMessage } from '../services/api'
 import { Button, Chip } from './UI'
@@ -16,15 +16,26 @@ export function slugifyName(name: string): string {
 /** null = lookup failed (unverified); undefined/missing = still verifying. */
 type LookupMap = Record<string, UserLookup | null>
 
+/** Why a linked member cannot join research yet; null once they can. Mirrors the backend 403/400 order. */
+function linkedBlocker(username: string, info: UserLookup | null | undefined): string | null {
+  if (info === undefined) return `@${username} (still verifying)`
+  if (info === null) return `@${username} (couldn’t be verified)`
+  if (info.link_status === 'pending') return `@${username} (invitation pending)`
+  if (info.link_status === 'declined') return `@${username} (declined your invitation)`
+  if (info.link_status !== 'accepted') return `@${username} (needs an invitation)`
+  return info.intake_complete ? null : `@${username} (hasn’t finished their taste profile)`
+}
+
 /**
  * Trip travel-party manager. Two kinds of co-traveller:
  * - linked members, added by CheckIn username (primary) — their own account's
- *   taste profile rides along; only they can finish it, so an unfinished
- *   profile blocks research (mirrors the backend 400);
+ *   taste profile rides along only after they accept an invitation; only they
+ *   can finish their profile, so a pending invitation or an unfinished profile
+ *   blocks research (mirrors the backend 403/400);
  * - guests without an account (secondary) — the organizer answers the
  *   4-question taste intake for them right here.
  * Removing anyone only takes them off this trip. Every blocker is lifted up
- * so TripForm can hold research until the whole party has a taste profile.
+ * so TripForm can hold research until the whole party has a usable profile.
  */
 export function CompanionManager({ guests, onGuestsChange, usernames, onUsernamesChange, onBlockedChange }: {
   guests: string[]
@@ -44,6 +55,8 @@ export function CompanionManager({ guests, onGuestsChange, usernames, onUsername
   const [looking, setLooking] = useState(false)
   const [lookups, setLookups] = useState<LookupMap>({})
   const inFlightLookups = useRef(new Set<string>())
+  const [inviteBusy, setInviteBusy] = useState<string | null>(null)
+  const [inviteError, setInviteError] = useState<string | null>(null)
 
   const [reloadKey, setReloadKey] = useState(0)
   const load = useCallback(() => setReloadKey((key) => key + 1), [])
@@ -74,12 +87,7 @@ export function CompanionManager({ guests, onGuestsChange, usernames, onUsername
   const full = total >= MAX_COMPANIONS
 
   const blockers = useMemo(() => [
-    ...usernames.map((username) => {
-      const info = lookups[username.toLowerCase()]
-      if (info === undefined) return `@${username} (still verifying)`
-      if (info === null) return `@${username} (couldn’t be verified)`
-      return info.intake_complete ? null : `@${username} (hasn’t finished their taste profile)`
-    }),
+    ...usernames.map((username) => linkedBlocker(username, lookups[username.toLowerCase()])),
     ...guests.map((name) => profiledSet.has(slugifyName(name)) ? null : `${name} (guest — needs their taste intake)`),
   ].filter((entry): entry is string => entry !== null), [usernames, lookups, guests, profiledSet])
   useEffect(() => { onBlockedChange(blockers) }, [blockers, onBlockedChange])
@@ -112,6 +120,37 @@ export function CompanionManager({ guests, onGuestsChange, usernames, onUsername
     }
   }
 
+  const invite = async (username: string) => {
+    const key = username.toLowerCase()
+    setInviteBusy(key)
+    setInviteError(null)
+    try {
+      const link = await api.inviteCompanion(username)
+      setLookups((previous) => {
+        const current = previous[key]
+        return current ? { ...previous, [key]: { ...current, link_status: link.status } } : previous
+      })
+    } catch (reason) {
+      setInviteError(userErrorMessage(reason, `Could not invite @${username}. It is safe to try again.`))
+    } finally {
+      setInviteBusy(null)
+    }
+  }
+
+  const recheck = async (username: string) => {
+    const key = username.toLowerCase()
+    if (inFlightLookups.current.has(key)) return
+    inFlightLookups.current.add(key)
+    try {
+      const found = await api.lookupUser(username)
+      setLookups((previous) => ({ ...previous, [key]: found }))
+    } catch {
+      setLookups((previous) => ({ ...previous, [key]: null }))
+    } finally {
+      inFlightLookups.current.delete(key)
+    }
+  }
+
   const addGuest = (name: string) => {
     const trimmed = name.trim()
     if (!trimmed || full) return
@@ -120,8 +159,21 @@ export function CompanionManager({ guests, onGuestsChange, usernames, onUsername
     setGuestDraft('')
   }
 
+  const memberChip = (username: string, info: UserLookup | null | undefined) => {
+    if (info === undefined) return <Chip tone="muted">{`@${username} · verifying…`}</Chip>
+    if (info === null) return <Chip tone="warn" icon={<AlertCircle aria-hidden />} title="CheckIn couldn’t confirm this account — remove and re-add them to retry.">{`@${username} · couldn’t verify this account`}</Chip>
+    if (info.link_status === 'accepted') {
+      return info.intake_complete
+        ? <Chip tone="ok" icon={<CircleCheck aria-hidden />}>{`@${username}${info.name ? ` · ${info.name}` : ''}`}</Chip>
+        : <Chip tone="warn" icon={<AlertCircle aria-hidden />} title="Only they can finish their own taste profile — ask them to open CheckIn and complete the intake.">{`@${username} · hasn’t finished their taste profile`}</Chip>
+    }
+    if (info.link_status === 'pending') return <Chip tone="muted" icon={<Clock aria-hidden />} title="They can accept from the Travel companions section of their profile.">{`@${username} · invitation pending`}</Chip>
+    if (info.link_status === 'declined') return <Chip tone="warn" icon={<AlertCircle aria-hidden />}>{`@${username} · declined your invitation`}</Chip>
+    return <Chip tone="muted">{`@${username} · not invited yet`}</Chip>
+  }
+
   return <div className="party">
-    <p className="party-hint">Add co-travellers by their CheckIn username — their own taste profile travels with them, so rankings balance the whole group.</p>
+    <p className="party-hint">Add co-travellers by their CheckIn username and send an invitation — once they accept, their own taste profile travels with them, so rankings balance the whole group.</p>
     {loadError
       ? <p className="party-status party-status--error" role="alert">
         {loadError} <Button type="button" variant="quiet" onClick={load}>Retry</Button>
@@ -151,27 +203,30 @@ export function CompanionManager({ guests, onGuestsChange, usernames, onUsername
     </div>
     {usernames.length > 0 && <ul className="party-list" aria-label="Linked members">
       {usernames.map((username) => {
-        const info = lookups[username.toLowerCase()]
-        return <li key={username.toLowerCase()} className="party-row">
-          {info?.intake_complete
-            ? <Chip tone="ok" icon={<CircleCheck aria-hidden />}>{`@${username}${info.name ? ` · ${info.name}` : ''}`}</Chip>
-            : info === undefined
-              ? <Chip tone="muted">{`@${username} · verifying…`}</Chip>
-              : info === null
-                ? <Chip tone="warn" icon={<AlertCircle aria-hidden />} title="CheckIn couldn’t confirm this account — remove and re-add them to retry.">{`@${username} · couldn’t verify this account`}</Chip>
-                : <Chip tone="warn" icon={<AlertCircle aria-hidden />} title="Only they can finish their own taste profile — ask them to open CheckIn and complete the intake.">{`@${username} · hasn’t finished their taste profile`}</Chip>}
+        const key = username.toLowerCase()
+        const info = lookups[key]
+        const canInvite = info != null && info.link_status !== 'accepted' && info.link_status !== 'pending'
+        return <li key={key} className="party-row">
+          {memberChip(username, info)}
           <span className="party-row__actions">
+            {canInvite && <Button type="button" variant="secondary" disabled={inviteBusy === key} onClick={() => void invite(info.username)}>
+              <Send aria-hidden /> {inviteBusy === key ? 'Inviting…' : info.link_status === 'none' ? 'Invite' : 'Invite again'}
+            </Button>}
+            {info?.link_status === 'pending' && <Button type="button" variant="quiet" onClick={() => void recheck(username)} title="Refresh once they have accepted">
+              <RefreshCw aria-hidden /> Check again
+            </Button>}
             <button
               type="button"
               className="icon-button party-remove"
               aria-label={`Remove @${username} from this trip`}
-              title="Removes them from this trip only — their account is untouched"
+              title="Removes them from this trip only — their account and any invitation are untouched"
               onClick={() => onUsernamesChange(usernames.filter((other) => other !== username))}
             ><X aria-hidden /></button>
           </span>
         </li>
       })}
     </ul>}
+    {inviteError && <p className="party-status party-status--error" role="alert">{inviteError}</p>}
     {guests.length > 0 && <ul className="party-list" aria-label="Guests">
       {guests.map((name) => {
         const isProfiled = profiledSet.has(slugifyName(name))

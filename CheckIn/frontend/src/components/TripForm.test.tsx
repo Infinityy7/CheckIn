@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { TripForm } from './TripForm'
 import { api, ApiError } from '../services/api'
+import { TRIP_DRAFT_KEY } from '../services/tripDraft'
 
 function mockOverview(cotravellers: string[]) {
   return vi.spyOn(api, 'profileOverview').mockResolvedValue({ sketch: null, cotravellers })
@@ -10,7 +11,7 @@ function mockLookup(users: Record<string, { name: string | null; intake_complete
   return vi.spyOn(api, 'lookupUser').mockImplementation((username) => {
     const found = users[username]
     if (!found) return Promise.reject(new ApiError('No such user.', 404, 'NOT_FOUND'))
-    return Promise.resolve({ username, ...found })
+    return Promise.resolve({ username, link_status: 'accepted' as const, ...found })
   })
 }
 
@@ -37,6 +38,7 @@ function fillRoute() {
   fireEvent.change(screen.getByLabelText(/starting from/i), { target: { value: 'Mumbai, India' } })
 }
 
+beforeEach(() => localStorage.clear())
 afterEach(() => vi.restoreAllMocks())
 
 it('hides the companion manager for solo trips and submits empty companion lists', async () => {
@@ -87,7 +89,8 @@ it('blocks research while a linked member has not finished their taste profile',
 
   addUsername('kai')
   expect(await screen.findByText(/@kai · hasn.t finished their taste profile/)).toBeInTheDocument()
-  expect(screen.getByRole('button', { name: /research my trip/i })).toBeDisabled()
+  // the blocker list lifts to the parent one commit after the status text renders
+  await waitFor(() => expect(screen.getByRole('button', { name: /research my trip/i })).toBeDisabled())
   expect(screen.getByText(/waiting on taste profiles/i)).toHaveTextContent('@kai')
 })
 
@@ -184,7 +187,7 @@ it('submits both companion lists and labels the two party kinds', async () => {
 
 it('caps linked members plus guests at 8 companions combined', async () => {
   mockOverview([])
-  vi.spyOn(api, 'lookupUser').mockImplementation((username) => Promise.resolve({ username, name: null, intake_complete: true }))
+  vi.spyOn(api, 'lookupUser').mockImplementation((username) => Promise.resolve({ username, name: null, intake_complete: true, link_status: 'accepted' as const }))
   render(<TripForm onSubmit={vi.fn()} busy={false} />)
   await settled()
 
@@ -201,4 +204,101 @@ it('caps linked members plus guests at 8 companions combined', async () => {
   expect(screen.getByRole('button', { name: 'Add' })).toBeDisabled()
   expect(screen.getByLabelText(/guest name/i)).toBeDisabled()
   expect(screen.getByRole('button', { name: 'Add guest' })).toBeDisabled()
+})
+
+const feasibilityReport = {
+  verdict: 'unrealistic' as const,
+  confidence: 0.9,
+  reason: 'Flights alone would exceed this budget.',
+  suggestion_text: 'Try at least 1800 USD for this route.',
+  suggested_changes: { budget_amount: 1800, end_date: null, destination: null },
+}
+
+it('shows the feasibility warning with the suggested change', async () => {
+  mockOverview([])
+  render(<TripForm onSubmit={vi.fn()} busy={false} feasibility={feasibilityReport} onProceedAnyway={vi.fn()} onDismissWarning={vi.fn()} />)
+
+  expect(screen.getByText(/won’t fit its budget/i)).toBeInTheDocument()
+  expect(screen.getByText(/Flights alone would exceed this budget.*Try at least 1800 USD/)).toBeInTheDocument()
+  await settled()
+})
+
+it('applies the suggested change to the form and dismisses the warning', async () => {
+  mockOverview([])
+  const onDismiss = vi.fn()
+  render(<TripForm onSubmit={vi.fn()} busy={false} feasibility={feasibilityReport} onProceedAnyway={vi.fn()} onDismissWarning={onDismiss} />)
+
+  fireEvent.click(screen.getByRole('button', { name: /apply suggestion/i }))
+
+  expect(screen.getByLabelText(/amount/i)).toHaveValue(1800)
+  expect(onDismiss).toHaveBeenCalledTimes(1)
+  await settled()
+})
+
+it('lets the traveler research anyway with the values currently on the form', async () => {
+  mockOverview([])
+  const onProceed = vi.fn()
+  render(<TripForm onSubmit={vi.fn()} busy={false} feasibility={feasibilityReport} onProceedAnyway={onProceed} onDismissWarning={vi.fn()} />)
+
+  fillRoute()
+  fireEvent.change(screen.getByLabelText(/amount/i), { target: { value: '200' } })
+  fireEvent.click(screen.getByRole('button', { name: /research anyway/i }))
+  expect(onProceed).toHaveBeenCalledTimes(1)
+  expect(onProceed).toHaveBeenCalledWith(expect.objectContaining({ destination: 'Kyoto, Japan', origin: 'Mumbai, India', budget_amount: 200, cotravellers: [] }))
+  await settled()
+})
+
+it('shows an in-place status and disables every submit path while creation is pending', async () => {
+  mockOverview([])
+  render(<TripForm onSubmit={vi.fn()} busy feasibility={feasibilityReport} onProceedAnyway={vi.fn()} onDismissWarning={vi.fn()} />)
+
+  expect(screen.getByRole('button', { name: /opening a workspace/i })).toBeDisabled()
+  expect(screen.getByRole('button', { name: /research anyway/i })).toBeDisabled()
+  expect(screen.getByText(/your details stay right here/i)).toBeInTheDocument()
+  await settled()
+})
+
+it('persists an unfinished draft under the versioned key and restores it on remount', async () => {
+  mockOverview([])
+  const first = render(<TripForm onSubmit={vi.fn()} busy={false} />)
+  await settled()
+  expect(localStorage.getItem(TRIP_DRAFT_KEY)).toBeNull()
+
+  fillRoute()
+  fireEvent.change(screen.getByLabelText(/amount/i), { target: { value: '200' } })
+  openGuestSection()
+  addGuest('Maya')
+  expect(await screen.findByText('Guest · needs taste intake')).toBeInTheDocument()
+  await waitFor(() => expect(localStorage.getItem(TRIP_DRAFT_KEY)).toContain('Kyoto, Japan'))
+  expect(JSON.parse(localStorage.getItem(TRIP_DRAFT_KEY)!)).toMatchObject({ form: { origin: 'Mumbai, India', budget_amount: 200 }, guests: ['Maya'] })
+  first.unmount()
+
+  render(<TripForm onSubmit={vi.fn()} busy={false} />)
+  expect(screen.getByLabelText(/destination/i)).toHaveValue('Kyoto, Japan')
+  expect(screen.getByLabelText(/starting from/i)).toHaveValue('Mumbai, India')
+  expect(screen.getByLabelText(/amount/i)).toHaveValue(200)
+  expect(screen.getByText('Maya')).toBeInTheDocument()
+  await settled()
+})
+
+it('ignores a corrupt draft and past dates from an old draft', async () => {
+  mockOverview([])
+  localStorage.setItem(TRIP_DRAFT_KEY, 'not json')
+  const first = render(<TripForm onSubmit={vi.fn()} busy={false} />)
+  expect(screen.getByLabelText(/destination/i)).toHaveValue('')
+  await settled()
+  first.unmount()
+
+  localStorage.setItem(TRIP_DRAFT_KEY, JSON.stringify({ form: { destination: 'Lisbon', start_date: '2020-01-01', end_date: '2020-01-05' }, guests: 'nope' }))
+  render(<TripForm onSubmit={vi.fn()} busy={false} />)
+  expect(screen.getByLabelText(/destination/i)).toHaveValue('Lisbon')
+  expect((screen.getByLabelText('Depart') as HTMLInputElement).value >= new Date().toISOString().slice(0, 10)).toBe(true)
+  await settled()
+})
+
+it('renders no feasibility warning by default', async () => {
+  mockOverview([])
+  render(<TripForm onSubmit={vi.fn()} busy={false} />)
+  expect(screen.queryByText(/won’t fit its budget/i)).not.toBeInTheDocument()
+  await settled()
 })

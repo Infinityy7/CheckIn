@@ -29,6 +29,12 @@ services:
     environment:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in .env}
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?set LITELLM_MASTER_KEY in .env}
+      # Virtual-key storage. Empty means no DB: the proxy still serves
+      # passthrough traffic but /key/generate is unavailable.
+      DATABASE_URL: ${LITELLM_DATABASE_URL:-}
+    extra_hosts:
+      # Lets the container reach a Postgres running on the host.
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./gateway/litellm.config.yaml:/app/config.yaml:ro
     command: ["--config", "/app/config.yaml", "--port", "4000"]

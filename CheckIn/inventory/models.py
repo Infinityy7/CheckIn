@@ -236,6 +236,14 @@ class FlightOffer(ApiModel):
     duration_minutes: int = Field(..., ge=0)
     stops: int = Field(..., ge=0)
     journey_type: Literal["one_way", "round_trip"] = "one_way"
+    return_carrier: str | None = None
+    return_flight_number: str | None = None
+    return_origin: str | None = None
+    return_destination: str | None = None
+    return_depart_at: datetime | None = None
+    return_arrive_at: datetime | None = None
+    return_duration_minutes: int | None = Field(None, ge=0)
+    return_stops: int | None = Field(None, ge=0)
     total: Money
     quote_expires_at: datetime | None = None
     hold_expires_at: datetime | None = None
@@ -312,6 +320,7 @@ class CartItem(ApiModel):
 
 class Cart(ApiModel):
     trip_id: str
+    version: int = Field(1, ge=1)
     state: CartState = CartState.OPEN
     items: list[CartItem] = Field(default_factory=list)
     saved_expires_at: datetime | None = None

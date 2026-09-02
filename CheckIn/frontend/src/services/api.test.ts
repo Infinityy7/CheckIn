@@ -1,8 +1,72 @@
-import { api, ApiError, userErrorMessage } from './api'
+import { api, ApiError, TRIP_CREATE_TIMEOUT_MS, userErrorMessage } from './api'
+import type { TripPreferences } from '../types'
+
+const preferences: TripPreferences = {
+  destination: 'Tokyo, Japan', origin: 'Delhi, India', start_date: '2026-10-12', end_date: '2026-10-18', budget_amount: 200,
+  currency: 'USD', vibes: ['culture'], group_type: 'couple', num_travelers: 2, cotravellers: [], cotraveller_usernames: [],
+}
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.restoreAllMocks()
   localStorage.clear()
+})
+
+describe('createTrip', () => {
+  it('sends the idempotency key header and the feasibility acknowledgement flag', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ trip_id: null, status: 'held', replayed: false, feasibility: { verdict: 'unrealistic' } }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await api.createTrip(preferences, { idempotencyKey: 'a1b2c3d4-e5f6-7890', acknowledgeFeasibility: true })
+
+    expect(result).toMatchObject({ trip_id: null, status: 'held', replayed: false })
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(path).toBe('/api/trip/preferences')
+    expect(init.method).toBe('POST')
+    expect(init.headers).toMatchObject({ 'Idempotency-Key': 'a1b2c3d4-e5f6-7890', 'Content-Type': 'application/json' })
+    expect(JSON.parse(init.body as string)).toEqual({ ...preferences, feasibility_acknowledged: true })
+  })
+
+  it('does not acknowledge feasibility unless asked', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ trip_id: 'trip-1', status: 'received', replayed: false }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.createTrip(preferences, { idempotencyKey: 'a1b2c3d4-e5f6-7890' })
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(JSON.parse(init.body as string).feasibility_acknowledged).toBe(false)
+  })
+
+  it('outlasts the 25s backend feasibility deadline instead of using the 20s JSON budget', async () => {
+    expect(TRIP_CREATE_TIMEOUT_MS).toBe(45_000)
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', vi.fn((_path: string, init?: RequestInit) => new Promise<Response>((_, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+    })))
+    const outcome = vi.fn()
+    api.createTrip(preferences, { idempotencyKey: 'a1b2c3d4-e5f6-7890' }).then(() => outcome('resolved'), (reason: ApiError) => outcome(reason.code))
+
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(outcome).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(TRIP_CREATE_TIMEOUT_MS - 30_000)
+    expect(outcome).toHaveBeenCalledWith('REQUEST_TIMEOUT')
+  })
+
+  it('keeps the shorter JSON budget for ordinary reads', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', vi.fn((_path: string, init?: RequestInit) => new Promise<Response>((_, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+    })))
+    const outcome = vi.fn()
+    api.me().then(() => outcome('resolved'), (reason: ApiError) => outcome(reason.code))
+
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(outcome).toHaveBeenCalledWith('REQUEST_TIMEOUT')
+  })
 })
 
 describe('ApiError', () => {

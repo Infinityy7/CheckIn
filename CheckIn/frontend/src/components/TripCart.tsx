@@ -1,7 +1,7 @@
 import '../styles/inventory.css'
 import { AlertTriangle, Check, Clock3, RefreshCw, ShoppingBag, X } from 'lucide-react'
 import { useState } from 'react'
-import { api, userErrorMessage } from '../services/api'
+import { ApiError, api, userErrorMessage } from '../services/api'
 import type { Money, TripCart as TripCartModel, TripCartItem } from '../types'
 import { Chip, Countdown, SourceBadge, type ChipTone } from './UI'
 
@@ -20,6 +20,8 @@ const statusTone: Record<TripCartItem['status'], ChipTone> = {
   price_changed: 'danger', unavailable: 'danger', expired: 'danger', error: 'danger',
 }
 
+export const CART_REFRESHED_NOTICE = 'Your cart changed elsewhere — refreshed.'
+
 /** Each supplier clock is shown as its own honest timer; a plain save has no hold to count down. */
 function ItemClock({ item }: { item: TripCartItem }) {
   if (item.holdExpiresAt) return <Countdown expiresAt={item.holdExpiresAt} label="Hold expires in" expiredLabel="Hold expired — recheck prices" />
@@ -36,16 +38,25 @@ export function TripCart({ tripId, cart, loading, error, onCartChange, onError }
   onError: (message: string) => void
 }) {
   const [removing, setRemoving] = useState<string[]>([])
+  const [notice, setNotice] = useState('')
+
+  async function refreshAfterConflict() {
+    try { onCartChange(await api.cart(tripId)); setNotice(CART_REFRESHED_NOTICE) }
+    catch (reason) { onError(userErrorMessage(reason, 'Your cart changed elsewhere and could not be refreshed.')) }
+  }
 
   async function remove(item: TripCartItem) {
-    setRemoving((items) => [...items, item.id]); onError('')
-    try { onCartChange(await api.removeCartItem(tripId, item.id)) }
-    catch (reason) { onError(userErrorMessage(reason, `${item.title} could not be removed.`)) }
+    setRemoving((items) => [...items, item.id]); onError(''); setNotice('')
+    try { onCartChange(await api.removeCartItem(tripId, item.id, cart?.version)) }
+    catch (reason) {
+      if (reason instanceof ApiError && reason.code === 'CART_VERSION_CONFLICT') await refreshAfterConflict()
+      else onError(userErrorMessage(reason, `${item.title} could not be removed.`))
+    }
     finally { setRemoving((items) => items.filter((id) => id !== item.id)) }
   }
 
   async function revalidate() {
-    onError('')
+    onError(''); setNotice('')
     try { onCartChange(await api.revalidateCart(tripId)) }
     catch (reason) { onError(userErrorMessage(reason, 'The cart could not be refreshed.')) }
   }
@@ -59,6 +70,7 @@ export function TripCart({ tripId, cart, loading, error, onCartChange, onError }
     </div>}
     {loading && <div className="cart-loading" role="status">Loading saved choices…</div>}
     {!loading && error && <p className="cart-error" role="alert"><AlertTriangle /> {error}</p>}
+    {!loading && !error && notice && <p className="cart-notice" role="status"><RefreshCw aria-hidden /> {notice}</p>}
     {!loading && !error && !cart?.items.length && <p className="cart-empty">Open a hotel’s room prices, then save the exact rate you want.</p>}
     {cart?.items.length ? <div className="cart-items">{cart.items.map((item) => <article className={`cart-item cart-item--${item.status}`} key={item.id}>
       <div className="cart-item__head">

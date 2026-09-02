@@ -267,6 +267,8 @@ main.planner :is(input, select, button):focus-visible {
 .planner .trip-form__footer p { margin: 0; color: var(--muted); font-size: 12px; }
 .planner .trip-form__footer strong { color: var(--ink); }
 .planner .gate-note { margin-top: 6px; max-width: 560px; color: var(--warn); font-size: 12.5px; font-weight: 600; line-height: 1.5; }
+.planner .submit-status { display: flex; align-items: center; gap: 8px; margin-top: 6px; color: var(--accent-strong); font-size: 12.5px; font-weight: 600; line-height: 1.5; }
+.planner .submit-status svg { flex-shrink: 0; width: 15px; height: 15px; animation: spin-slow 1.2s linear infinite; }
 
 /* Companion intake modal (portaled to body — class names are new, no legacy clash) */
 .intake { display: flex; flex-direction: column; gap: 14px; }
@@ -366,4 +368,13 @@ main.planner :is(input, select, button):focus-visible {
   .planner .party-row__actions { margin-left: 0; width: 100%; justify-content: flex-end; }
   .intake-composer__row { flex-wrap: wrap; }
   .intake-composer__row .button { width: 100%; justify-content: center; }
+}
+
+.feasibility-banner { margin: 0 0 1rem; }
+.feasibility-banner .banner { align-items: center; flex-wrap: wrap; }
+.feasibility-banner .banner__body { flex: 1 1 220px; }
+.feasibility-actions { display: flex; gap: 0.5rem; flex-shrink: 0; flex-wrap: wrap; }
+@media (max-width: 480px) {
+  .feasibility-actions { flex-basis: 100%; }
+  .feasibility-actions .button { flex: 1 1 auto; justify-content: center; }
 }

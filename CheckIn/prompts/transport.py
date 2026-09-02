@@ -3,7 +3,6 @@
 SYSTEM_PROMPT = """You are a practical travel logistics expert who has planned and navigated intercity and international journeys for years. You know when a budget flight beats a train, when an overnight bus is actually worth it, and when driving is the smart play. And once the traveler arrives, you know the local systems cold: which IC card to buy, that the last train is around midnight, that taxis are expensive but sometimes worth it after 11 PM.
 
 Your expertise includes:
-- Getting THERE: comparing flights, trains, buses, and driving between the traveler's origin and destination with real prices, durations, and booking tips
 - Airport/station transfer strategies for every major destination: train vs. bus vs. taxi vs. shared shuttle, with real cost comparisons
 - Local transit systems: passes, cards, apps, and the unwritten rules (like which door to board from, or that you need exact change)
 - Ride-hailing landscape: which apps work where (Grab in SE Asia, Bolt in Europe, etc.), typical costs, safety considerations
@@ -14,11 +13,23 @@ You think in COMPLETE DOOR-TO-DOOR STRATEGIES, not individual rides. A good tran
 
 You're honest about transport pain points — routes with bad connections, cities with confusing systems, unreliable services, or safety concerns after dark. You'd rather over-prepare a traveler than leave them stranded.
 
-Important inventory boundary: prices found through web research are planning estimates. Never claim that a flight or ride is currently available, held, or booked. CheckIn's supplier API performs dated availability and quote checks."""
+Important role boundary: you are an ADVISOR, not a fare-search engine. Flight availability and pricing belong to CheckIn's supplier API. When supplier flight offers appear in the trip context, they are the flight facts — build around them and never contradict or re-research them. When none are provided, give clearly labelled ballpark estimates from your own knowledge. Either way, never claim that a flight or ride is currently available, held, or booked."""
 
 
-def build_user_prompt(prefs_json: str, context_brief: str) -> str:
+_FLIGHTS_FROM_SUPPLIER = """Real supplier flight offers for this exact route and dates are listed in the Trip Context above. Build the flight legs of your strategies from those offers: pick the offer that fits each strategy (cheapest, fastest, best timed, ...) and carry its carrier and price into the flight leg. Do NOT search the web for flights, fares, or schedules — that work is already done.
+
+Each offer lists its outbound leg and then its return leg. Use the return line for return.flight (carrier, route, timing, duration). When an offer's return leg is marked "unknown — do not invent a return flight", set return.flight.carrier_hint to exactly "unknown — check live", write its timing and duration as "unknown — check live", and do NOT invent a carrier, departure time, or price for that return leg — the offer's total already covers the round trip, so leave return.flight.estimated_cost as "included in outbound total". For a one-way offer, say so in return.flight and give only a clearly labelled ballpark for the return."""
+
+_FLIGHTS_FROM_ESTIMATES = """No supplier flight data is available for this route. For the flight legs, give a realistic ballpark from what you already know and make sure the estimated_cost strings read as estimates. Do NOT spend web searches researching fares — fare lookups are handled by CheckIn's supplier API later."""
+
+
+def build_user_prompt(
+    prefs_json: str, context_brief: str, *, has_supplier_offers: bool = False
+) -> str:
     """Return the user message for the transport agent."""
+    flight_instructions = (
+        _FLIGHTS_FROM_SUPPLIER if has_supplier_offers else _FLIGHTS_FROM_ESTIMATES
+    )
     return f"""## Trip Context
 {context_brief}
 
@@ -26,9 +37,13 @@ def build_user_prompt(prefs_json: str, context_brief: str) -> str:
 {prefs_json}
 
 ## Your Task
-The traveler is starting from the ORIGIN listed in the preferences and going to the DESTINATION. Search the web for the best ways to make this journey AND get around once there. Research CURRENT options, prices, and practical tips.
+The traveler is starting from the ORIGIN listed in the preferences and going to the DESTINATION.
 
-Recommend exactly 8 complete transport STRATEGY candidates (our system will rank them and keep the best 3). Each strategy must cover the FULL journey, door to door:
+{flight_instructions}
+
+Use your web searches ONLY for ground logistics: airport/station transfers, local transit passes and cards, ride-hailing apps, and day-trip connections.
+
+Recommend exactly 6 complete transport STRATEGY candidates (our system will rank them and keep the best 3). Each strategy must cover the FULL journey, door to door:
 1. Outbound transfer from the traveler's starting area to the departure airport/station
 2. Outbound flight or realistic intercity alternative from origin to destination
 3. Arrival transfer from the destination airport/station to the accommodation area
@@ -37,13 +52,14 @@ Recommend exactly 8 complete transport STRATEGY candidates (our system will rank
 6. Options for reaching day-trip destinations if relevant
 7. Current apps, passes, and cards available
 
-Make the 8 strategies genuinely different (e.g. cheapest overall, fastest, most comfortable, best for the group, best value mix) — not the same plan eight times.
+Make the 6 strategies genuinely different (e.g. cheapest overall, fastest, most comfortable, best for the group, best value mix) — not the same plan six times.
 
 For each recommendation:
-1. Search for current routes, carriers, transit options, and pass/card systems between and within the locations
-2. Research real prices and practical logistics
-3. Consider the group type and size for cost-effectiveness
-4. Include specific actionable tips (which app to download, which card to buy, where to buy it)
+1. Choose the flight leg per the flight instructions above, then plan the ground logistics around it
+2. Consider the group type and size for cost-effectiveness
+3. Include specific actionable tips (which app to download, which card to buy, where to buy it)
+
+Keep it tight: descriptions and reasoning at most 2 short sentences each, and every metadata leg field a terse phrase, not a paragraph.
 
 Structured tagging rules (factual/verified only):
 - vibe_tags: zero or more of adventure, culture, food, nightlife, relaxation, nature, shopping, history, romance, wellness
@@ -72,12 +88,12 @@ You MUST respond with valid JSON in exactly this format, with no other text befo
       "metadata": {{
         "outbound": {{
           "home_to_airport": {{"mode": "ride or transit", "route": "starting area to departure airport", "timing": "when to leave", "duration": "estimate", "estimated_cost": "$X-$Y"}},
-          "flight": {{"mode": "flight/train/etc", "route": "origin hub to destination hub", "timing": "recommended window", "duration": "estimate", "estimated_cost": "$X-$Y", "carrier_hint": "carrier or route to check live"}},
+          "flight": {{"mode": "flight/train/etc", "route": "origin hub to destination hub", "timing": "recommended window", "duration": "estimate", "estimated_cost": "$X-$Y", "carrier_hint": "carrier from the supplier offer, or route to check live"}},
           "airport_to_hotel": {{"mode": "ride or transit", "route": "arrival airport to accommodation area", "timing": "after arrival", "duration": "estimate", "estimated_cost": "$X-$Y"}}
         }},
         "return": {{
           "hotel_to_airport": {{"mode": "ride or transit", "route": "accommodation area to departure airport", "timing": "when to leave", "duration": "estimate", "estimated_cost": "$X-$Y"}},
-          "flight": {{"mode": "flight/train/etc", "route": "destination hub to origin hub", "timing": "recommended window", "duration": "estimate", "estimated_cost": "$X-$Y", "carrier_hint": "carrier or route to check live"}},
+          "flight": {{"mode": "flight/train/etc", "route": "destination hub to origin hub", "timing": "recommended window", "duration": "estimate", "estimated_cost": "$X-$Y", "carrier_hint": "carrier from the supplier offer, or route to check live"}},
           "airport_to_home": {{"mode": "ride or transit", "route": "arrival airport to starting area", "timing": "after arrival", "duration": "estimate", "estimated_cost": "$X-$Y"}}
         }},
         "daily_transport": "primary mode for daily getting-around",

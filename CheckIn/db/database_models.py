@@ -148,6 +148,7 @@ class Trip(Base):
     __tablename__ = "trips"
     __table_args__ = (
         Index("ix_trips_user_created", "user_id", "created_at"),
+        Index("uq_trips_user_idempotency", "user_id", "idempotency_key", unique=True),
     )
 
     trip_id: Mapped[str] = mapped_column(UUID_TYPE, primary_key=True)
@@ -156,6 +157,7 @@ class Trip(Base):
     )
     state_json: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, nullable=False)
     profile_version: Mapped[int | None] = mapped_column(Integer)
+    idempotency_key: Mapped[str | None] = mapped_column(String(160))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
@@ -247,3 +249,31 @@ class PreferenceEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
+
+
+class CompanionLink(Base):
+    __tablename__ = "companion_links"
+    __table_args__ = (
+        UniqueConstraint("inviter_user_id", "invitee_user_id", name="uq_companion_links_pair"),
+        CheckConstraint(
+            "status IN ('pending', 'accepted', 'declined', 'revoked')",
+            name="ck_companion_links_status",
+        ),
+        CheckConstraint("inviter_user_id <> invitee_user_id", name="ck_companion_links_distinct"),
+        Index("ix_companion_links_invitee_status", "invitee_user_id", "status"),
+    )
+
+    link_id: Mapped[str] = mapped_column(UUID_TYPE, primary_key=True, default=new_uuid)
+    inviter_user_id: Mapped[str] = mapped_column(
+        UUID_TYPE, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False
+    )
+    invitee_user_id: Mapped[str] = mapped_column(
+        UUID_TYPE, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending", server_default="pending"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

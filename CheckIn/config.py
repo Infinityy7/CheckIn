@@ -9,6 +9,10 @@ def _bool_env(name: str, default: str) -> bool:
     return os.environ.get(name, default).lower() in {"1", "true", "yes"}
 
 
+# development | test | production. Production refuses the SQLite fallback when
+# DATABASE_URL is missing (see db._database_url).
+APP_ENV: str = os.environ.get("APP_ENV", "development").strip().lower() or "development"
+
 # Optional LLM gateway (LiteLLM in Anthropic-native passthrough mode).
 # The kill switch: LLM_GATEWAY_ENABLED=false points AsyncAnthropic straight at
 # api.anthropic.com with the app-side resilience unchanged, giving instant
@@ -122,6 +126,17 @@ ITINERARY_DEADLINE_SECONDS: float = float(
 )
 CONTEXT_BRIEF_TIMEOUT_SECONDS: float = float(
     os.environ.get("CONTEXT_BRIEF_TIMEOUT_SECONDS", "45")
+)
+# Advisory sanity check on new trip requests. Fail-open by design: past the
+# deadline (or with the flag off) trips are created unchecked.
+FEASIBILITY_CHECK_ENABLED: bool = _bool_env("FEASIBILITY_CHECK_ENABLED", "true")
+FEASIBILITY_TIMEOUT_SECONDS: float = float(
+    os.environ.get("FEASIBILITY_TIMEOUT_SECONDS", "25")
+)
+# The supplier flight lookup that feeds the transport agent is best-effort:
+# past this deadline the agent plans with labelled estimates instead.
+FLIGHT_BRIEFING_TIMEOUT_SECONDS: float = float(
+    os.environ.get("FLIGHT_BRIEFING_TIMEOUT_SECONDS", "30")
 )
 SSE_HEARTBEAT_SECONDS: float = float(
     os.environ.get("SSE_HEARTBEAT_SECONDS", "15")

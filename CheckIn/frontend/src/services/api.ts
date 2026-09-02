@@ -1,10 +1,14 @@
-import type { AgentHealth, CharacterProfile, CharacterTraits, FlightAvailability, HotelAvailability, IntakeAnswer, IntakeState, PendingCheckInTrip, PostTripFeedbackResponse, ProfileOverview, ProfileWeights, RegisterPayload, StreamEvent, TripCart, TripPreferences, TripState, User, UserLookup } from '../types'
+import type { AgentHealth, CharacterProfile, CharacterTraits, FlightAvailability, HotelAvailability, IntakeAnswer, IntakeState, PendingCheckInTrip, PostTripFeedbackResponse, ProfileOverview, ProfileWeights, RegisterPayload, StreamEvent, TripCart, TripCreateOptions, TripCreateResult, TripPreferences, TripState, User, UserLookup } from '../types'
+import type { CompanionChatTranscript, CompanionLink, CompanionLinks } from '../types'
 
 const TOKEN_KEY = 'travelbuddy.session'
 const JSON_TIMEOUT_MS = 20_000
 // Endpoints that wait on a model turn. Adaptive thinking makes these
 // legitimately slower than a database read, so they get their own budget.
 const MODEL_TIMEOUT_MS = 90_000
+// Trip creation runs the feasibility check (FEASIBILITY_TIMEOUT_SECONDS, 25s) plus
+// request overhead server-side; the client must outlast that deadline.
+export const TRIP_CREATE_TIMEOUT_MS = 45_000
 
 interface ProblemBody {
   detail?: unknown
@@ -179,6 +183,16 @@ export const api = {
     localStorage.setItem(TOKEN_KEY, result.token)
   },
   lookupUser: (username: string) => request<UserLookup>(`/api/users/lookup?username=${encodeURIComponent(username)}`),
+  companionLinks: () => request<CompanionLinks>('/api/companions/links'),
+  inviteCompanion: (username: string) => request<CompanionLink>('/api/companions/links', {
+    method: 'POST', body: JSON.stringify({ username }),
+  }),
+  respondCompanionLink: (linkId: string, action: 'accept' | 'decline') => request<CompanionLink>(
+    `/api/companions/links/${encodeURIComponent(linkId)}/${action}`, { method: 'POST' },
+  ),
+  removeCompanionLink: (linkId: string) => request<CompanionLink>(
+    `/api/companions/links/${encodeURIComponent(linkId)}`, { method: 'DELETE' },
+  ),
   logout: async () => {
     await request('/api/auth/logout', { method: 'POST' }).catch(() => undefined)
     localStorage.removeItem(TOKEN_KEY)
@@ -192,9 +206,17 @@ export const api = {
   completeIntake: () => request<CharacterProfile>('/api/profile/intake/complete', { method: 'POST' }, MODEL_TIMEOUT_MS),
   resetIntake: () => request('/api/profile/intake', { method: 'DELETE' }),
   /** Self-profile chat is legacy; with cotravellerName it is the canonical companion intake. */
-  profileChat: (message = '', cotravellerName?: string) => request<{ reply: string; done: boolean }>('/api/profile/chat', {
-    method: 'POST', body: JSON.stringify({ message, ...(cotravellerName ? { cotraveller_name: cotravellerName } : {}) }),
+  profileChat: (message = '', cotravellerName?: string, turnKey?: string) => request<{ reply: string; done: boolean }>('/api/profile/chat', {
+    method: 'POST',
+    body: JSON.stringify({
+      message,
+      ...(cotravellerName ? { cotraveller_name: cotravellerName } : {}),
+      ...(turnKey ? { turn_key: turnKey } : {}),
+    }),
   }, MODEL_TIMEOUT_MS),
+  profileChatTranscript: (cotravellerName: string) => request<CompanionChatTranscript>(
+    `/api/profile/chat?cotraveller_name=${encodeURIComponent(cotravellerName)}`,
+  ),
   profileOverview: () => request<ProfileOverview>('/api/profile'),
   agentHealth: () => request<AgentHealth>('/api/health/agents'),
   updateProfile: (profile: CharacterProfileUpdate) => request<CharacterProfile>('/api/profile/character', {
@@ -205,9 +227,11 @@ export const api = {
     method: 'POST',
     body: JSON.stringify({ trip_id: tripId, recommendation_id: recommendationId, sentiment }),
   }),
-  createTrip: (preferences: TripPreferences) => request<{ trip_id: string }>('/api/trip/preferences', {
-    method: 'POST', body: JSON.stringify(preferences),
-  }),
+  createTrip: (preferences: TripPreferences, { idempotencyKey, acknowledgeFeasibility = false }: TripCreateOptions) => request<TripCreateResult>('/api/trip/preferences', {
+    method: 'POST',
+    headers: { 'Idempotency-Key': idempotencyKey },
+    body: JSON.stringify({ ...preferences, feasibility_acknowledged: acknowledgeFeasibility }),
+  }, TRIP_CREATE_TIMEOUT_MS),
   trip: (id: string) => request<TripState>(`/api/trip/${id}`),
   hotelRates: (tripId: string, recommendationId: string) => request<HotelAvailability>(
     `/api/trip/${encodeURIComponent(tripId)}/hotels/${encodeURIComponent(recommendationId)}/rates`,
@@ -221,8 +245,8 @@ export const api = {
       method: 'POST', body: JSON.stringify({ recommendationId, ...(ratePlanId ? { ratePlanId } : {}), kind }),
     },
   ),
-  removeCartItem: (tripId: string, itemId: string) => request<TripCart>(
-    `/api/trip/${encodeURIComponent(tripId)}/cart/items/${encodeURIComponent(itemId)}`, { method: 'DELETE' },
+  removeCartItem: (tripId: string, itemId: string, expectedVersion?: number) => request<TripCart>(
+    `/api/trip/${encodeURIComponent(tripId)}/cart/items/${encodeURIComponent(itemId)}${expectedVersion ? `?expectedVersion=${expectedVersion}` : ''}`, { method: 'DELETE' },
   ),
   revalidateCart: (tripId: string) => request<TripCart>(`/api/trip/${encodeURIComponent(tripId)}/cart/revalidate`, {
     method: 'POST',

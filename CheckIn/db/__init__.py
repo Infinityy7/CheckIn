@@ -19,6 +19,7 @@ from typing import Any, Callable
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, delete, func, inspect, select
+from sqlalchemy import text as sql_text
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Engine
@@ -28,6 +29,7 @@ from sqlalchemy.pool import NullPool
 
 from .database_models import (
     Base,
+    CompanionLink,
     LLMResearchCache,
     PreferenceEvent,
     Profile,
@@ -54,6 +56,10 @@ class ProfileVersionConflict(RuntimeError):
     """Raised when a learner tries to overwrite a newer profile version."""
 
 
+class TripIdempotencyConflict(RuntimeError):
+    """Raised when a trip insert collides with an existing (user, idempotency key)."""
+
+
 def _normalize_database_url(url: str) -> str:
     if url.startswith("postgres://"):
         return "postgresql+psycopg://" + url[len("postgres://"):]
@@ -66,6 +72,11 @@ def _database_url() -> str:
     configured = os.environ.get("DATABASE_URL", "").strip()
     if configured:
         return _normalize_database_url(configured)
+    if os.environ.get("APP_ENV", "development").strip().lower() == "production":
+        raise RuntimeError(
+            "DATABASE_URL is not set and APP_ENV=production forbids the SQLite fallback. "
+            "Point DATABASE_URL at the PostgreSQL database before starting the API."
+        )
     return f"sqlite+pysqlite:///{DB_PATH}"
 
 
@@ -130,6 +141,36 @@ def init_db() -> None:
     if not inspect(engine).has_table("alembic_version") or not inspect(engine).has_table("users"):
         raise RuntimeError(
             "PostgreSQL schema is not migrated. Run `alembic upgrade head` before starting the API."
+        )
+    _verify_alembic_head(engine)
+
+
+def _recorded_revision(engine: Engine) -> str | None:
+    with engine.connect() as connection:
+        return connection.execute(
+            sql_text("SELECT version_num FROM alembic_version")
+        ).scalar_one_or_none()
+
+
+def _script_head() -> str | None:
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    app_root = Path(__file__).resolve().parent.parent
+    config = Config(str(app_root / "alembic.ini"))
+    config.set_main_option("script_location", str(app_root / "db" / "migrations"))
+    return ScriptDirectory.from_config(config).get_current_head()
+
+
+def _verify_alembic_head(engine: Engine) -> None:
+    """Refuse to start a worker whose code expects a different schema revision."""
+    recorded = _recorded_revision(engine)
+    head = _script_head()
+    if recorded != head:
+        raise RuntimeError(
+            f"PostgreSQL schema is at Alembic revision {recorded or 'none'} but this build "
+            f"expects {head or 'none'}. Run `alembic upgrade head` (or deploy the matching "
+            "code) before starting the API."
         )
 
 
@@ -669,11 +710,13 @@ def save_trip_state(state_dict: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("trip state requires trip_id and user_id")
     engine = _connect()
     now = utc_now()
+    idempotency_key = state.get("idempotency_key") or None
     values = {
         "trip_id": trip_id,
         "user_id": user_id,
         "state_json": state,
         "profile_version": state.get("profile_version"),
+        "idempotency_key": idempotency_key,
         "created_at": _parse_datetime(state.get("created_at"), default_now=True),
         "updated_at": now,
     }
@@ -689,10 +732,19 @@ def save_trip_state(state_dict: dict[str, Any]) -> dict[str, Any]:
         # JSON owner while leaving the indexed relational owner unchanged.
         where=Trip.user_id == user_id,
     ).returning(Trip.user_id)
-    with engine.begin() as connection:
-        persisted_owner = connection.execute(statement).scalar_one_or_none()
-        if persisted_owner != user_id:
-            raise ValueError("trip owner does not match the persisted trip")
+    try:
+        with engine.begin() as connection:
+            persisted_owner = connection.execute(statement).scalar_one_or_none()
+            if persisted_owner != user_id:
+                raise ValueError("trip owner does not match the persisted trip")
+    except SAIntegrityError as exc:
+        # ON CONFLICT only covers trip_id; a second trip under the same
+        # (user_id, idempotency_key) trips the unique index instead.
+        if idempotency_key is None:
+            raise
+        raise TripIdempotencyConflict(
+            "a trip already exists for this user and idempotency key"
+        ) from exc
     return state
 
 
@@ -703,6 +755,15 @@ def load_trip_state(trip_id: str) -> dict[str, Any] | None:
 
 
 get_trip_state = load_trip_state
+
+
+def find_trip_by_idempotency_key(user_id: str, idempotency_key: str) -> dict[str, Any] | None:
+    with Session(_connect()) as session:
+        row = session.scalar(select(Trip).where(
+            Trip.user_id == user_id,
+            Trip.idempotency_key == idempotency_key,
+        ))
+        return _portable_json(row.state_json) if row else None
 
 
 def mutate_trip_state(
@@ -1048,6 +1109,134 @@ def list_preference_events(user_id: str, limit: int = 100) -> list[dict[str, Any
         return [_event_dict(row) for row in rows]
 
 
+# --- companion links ---
+
+COMPANION_LINK_STATUSES = ("pending", "accepted", "declined", "revoked")
+
+
+def _companion_link_dict(row: CompanionLink) -> dict[str, Any]:
+    return {
+        "link_id": row.link_id,
+        "inviter_user_id": row.inviter_user_id,
+        "invitee_user_id": row.invitee_user_id,
+        "status": row.status,
+        "created_at": _iso(row.created_at),
+        "responded_at": _iso(row.responded_at),
+    }
+
+
+def _companion_link_row(session: Session, inviter_id: str, invitee_id: str) -> CompanionLink | None:
+    return session.scalar(select(CompanionLink).where(
+        CompanionLink.inviter_user_id == inviter_id,
+        CompanionLink.invitee_user_id == invitee_id,
+    ))
+
+
+def create_or_reset_companion_link(inviter_id: str, invitee_id: str) -> dict:
+    """Invite ``invitee_id``. A declined or revoked link becomes pending again; pending/accepted stay as they are."""
+    if inviter_id == invitee_id:
+        raise ValueError("A traveler cannot invite themselves")
+    engine = _connect()
+    for _attempt in range(2):
+        try:
+            with Session(engine) as session, session.begin():
+                row = _companion_link_row(session, inviter_id, invitee_id)
+                if row is None:
+                    row = CompanionLink(
+                        inviter_user_id=inviter_id, invitee_user_id=invitee_id, status="pending"
+                    )
+                    session.add(row)
+                elif row.status in ("declined", "revoked"):
+                    row.status = "pending"
+                    row.created_at = utc_now()
+                    row.responded_at = None
+                session.flush()
+                return _companion_link_dict(row)
+        except SAIntegrityError:
+            continue
+    raise RuntimeError("companion link could not be created")
+
+
+def get_companion_link(inviter_id: str, invitee_id: str) -> dict | None:
+    with Session(_connect()) as session:
+        row = _companion_link_row(session, inviter_id, invitee_id)
+        return _companion_link_dict(row) if row else None
+
+
+def get_companion_link_by_id(link_id: str) -> dict | None:
+    with Session(_connect()) as session:
+        row = session.get(CompanionLink, link_id)
+        return _companion_link_dict(row) if row else None
+
+
+def companion_link_status(inviter_id: str, invitee_id: str) -> str:
+    """The inviter→invitee status, or 'none' when no invitation exists."""
+    link = get_companion_link(inviter_id, invitee_id)
+    return link["status"] if link else "none"
+
+
+def list_companion_links(user_id: str) -> dict[str, list[dict[str, Any]]]:
+    """Both directions; each row names only the other traveler, never a profile."""
+    def public(row: CompanionLink, counterpart: User) -> dict[str, Any]:
+        return {
+            "link_id": row.link_id,
+            "username": counterpart.username,
+            "name": counterpart.name,
+            "status": row.status,
+            "created_at": _iso(row.created_at),
+            "responded_at": _iso(row.responded_at),
+        }
+
+    with Session(_connect()) as session:
+        incoming = session.execute(
+            select(CompanionLink, User)
+            .join(User, User.user_id == CompanionLink.inviter_user_id)
+            .where(CompanionLink.invitee_user_id == user_id)
+            .order_by(CompanionLink.created_at.desc())
+        ).all()
+        outgoing = session.execute(
+            select(CompanionLink, User)
+            .join(User, User.user_id == CompanionLink.invitee_user_id)
+            .where(CompanionLink.inviter_user_id == user_id)
+            .order_by(CompanionLink.created_at.desc())
+        ).all()
+        return {
+            "incoming": [public(row, user) for row, user in incoming],
+            "outgoing": [public(row, user) for row, user in outgoing],
+        }
+
+
+def respond_companion_link(link_id: str, invitee_id: str, status: str) -> dict | None:
+    """The invitee accepts or declines. None when the link is missing or not addressed to them."""
+    if status not in ("accepted", "declined"):
+        raise ValueError("status must be 'accepted' or 'declined'")
+    with Session(_connect()) as session, session.begin():
+        row = session.get(CompanionLink, link_id)
+        if row is None or row.invitee_user_id != invitee_id:
+            return None
+        row.status = status
+        row.responded_at = utc_now()
+        session.flush()
+        return _companion_link_dict(row)
+
+
+def delete_companion_link(link_id: str, user_id: str) -> dict | None:
+    """The inviter revokes, the invitee declines; the row stays so a re-invite is possible. None for outsiders."""
+    with Session(_connect()) as session, session.begin():
+        row = session.get(CompanionLink, link_id)
+        if row is None:
+            return None
+        if row.inviter_user_id == user_id:
+            row.status = "revoked"
+        elif row.invitee_user_id == user_id:
+            row.status = "declined"
+        else:
+            return None
+        row.responded_at = utc_now()
+        session.flush()
+        return _companion_link_dict(row)
+
+
 def research_cache_fetch(exact_key: str, limit: int = 50) -> list[dict[str, Any]]:
     with Session(_connect()) as session:
         rows = session.scalars(
@@ -1091,6 +1280,14 @@ def research_cache_put(
             payload=_portable_json(payload),
             model=model,
         ))
+
+
+def research_cache_prune(expire_before: datetime) -> int:
+    with Session(_connect()) as session, session.begin():
+        result = session.execute(delete(LLMResearchCache).where(
+            LLMResearchCache.created_at <= expire_before,
+        ))
+        return int(result.rowcount or 0)
 
 
 def research_cache_clear() -> None:

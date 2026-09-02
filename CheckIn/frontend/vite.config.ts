@@ -16,5 +16,9 @@ export default defineConfig({
     setupFiles: './src/test/setup.ts',
     globals: true,
     exclude: ['e2e/**', 'node_modules/**'],
+    coverage: {
+      include: ['src/**/*.{ts,tsx}'],
+      exclude: ['src/**/*.test.{ts,tsx}', 'src/test/**', 'src/main.tsx', 'src/vite-env.d.ts'],
+    },
   },
 })

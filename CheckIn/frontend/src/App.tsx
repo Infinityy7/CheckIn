@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Compass, LogOut, Plus, Sparkles, UserRound } from 'lucide-react'
 import './styles/shell.css'
 import { api, ApiError, userErrorMessage } from './services/api'
-import type { AgentHealth, CharacterProfile, Itinerary, PendingCheckInTrip, Recommendation, StreamEvent, TripPreferences, TripState, User } from './types'
+import { clearTripDraft } from './services/tripDraft'
+import type { AgentHealth, CharacterProfile, FeasibilityReport, Itinerary, PendingCheckInTrip, Recommendation, StreamEvent, TripCreateResult, TripPreferences, TripState, User } from './types'
 import { AuthView } from './components/AuthView'
 import { Onboarding } from './components/Onboarding'
 import { TripForm } from './components/TripForm'
@@ -15,10 +16,20 @@ import { Banner, Brand, Button, ErrorState, LoadingState, Stepper, ThemeToggle }
 type Screen = 'planner' | 'workspace' | 'itinerary'
 const STAGES = ['Plan', 'Research', 'Itinerary'] as const
 const initialAgents: AgentStatus = { 'Accommodation Agent': 'waiting', 'Activities Agent': 'waiting', 'Restaurant Agent': 'waiting', 'Transport Agent': 'waiting' }
+const heldWithoutReport: FeasibilityReport = { verdict: 'unrealistic', confidence: 0, reason: 'This request was held for review before research.', suggestion_text: '', suggested_changes: {} }
 
 function streamErrorMessage(event: StreamEvent, fallback: string) {
   const message = event.error ?? fallback
   return event.request_id ? `${message} Reference: ${event.request_id.slice(0, 8)}.` : message
+}
+
+function newIdempotencyKey() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID()
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}-${Math.random().toString(36).slice(2, 14)}`
+}
+
+function preferencesFingerprint(preferences: TripPreferences) {
+  return JSON.stringify(preferences, Object.keys(preferences).sort())
 }
 
 export default function App() {
@@ -34,10 +45,14 @@ export default function App() {
   const [itinerary, setItinerary] = useState<Itinerary | null>(null)
   const [profileOpen, setProfileOpen] = useState(false)
   const [loading, setLoading] = useState(api.hasSession())
+  const [creatingTrip, setCreatingTrip] = useState(false)
   const [error, setError] = useState('')
   const [pendingCheckIn, setPendingCheckIn] = useState<PendingCheckInTrip | null>(null)
   const [health, setHealth] = useState<AgentHealth | null>(null)
   const [taviVisible, setTaviVisible] = useState(() => localStorage.getItem('travelbuddy.tavi') !== 'hidden')
+  const [feasibility, setFeasibility] = useState<FeasibilityReport | null>(null)
+  const [formKey, setFormKey] = useState(0)
+  const submission = useRef<{ fingerprint: string; key: string } | null>(null)
 
   const refreshHealth = useCallback(() => {
     api.agentHealth().then(setHealth).catch(() => setHealth(null))
@@ -69,8 +84,9 @@ export default function App() {
   }
 
   function hydrateTrip(state: TripState) {
+    const researched = Boolean(state.research_results?.length || state.research_errors?.length)
     setTrip(state); setRecommendations(state.research_results?.flatMap((result) => result.recommendations) ?? []); setSelections(state.selections ?? [])
-    setItinerary(state.itinerary ?? null); setScreen(state.itinerary ? 'itinerary' : state.research_results?.length ? 'workspace' : 'planner')
+    setItinerary(state.itinerary ?? null); setScreen(state.itinerary ? 'itinerary' : researched ? 'workspace' : 'planner')
     const restored: AgentStatus = { ...initialAgents }
     for (const result of state.research_results ?? []) restored[result.agent_name] = 'complete'
     for (const failure of state.research_errors ?? []) {
@@ -80,16 +96,31 @@ export default function App() {
     setAgents(restored)
   }
 
-  async function createTrip(preferences: TripPreferences) {
-    setLoading(true); setError('')
-    try {
-      const { trip_id } = await api.createTrip(preferences)
-      localStorage.setItem('travelbuddy.lastTrip', trip_id)
-      const state: TripState = { trip_id, preferences }
-      setTrip(state); setRecommendations([]); setSelections([]); setItinerary(null); setAgents(initialAgents); setScreen('workspace')
-      await runResearch(trip_id)
-    } catch (reason) { setError(userErrorMessage(reason, 'Could not create that trip.')) }
-    finally { setLoading(false) }
+  /** One key per submitted value-set: retries and "Research anyway" replay it, edits mint a new one. */
+  function idempotencyKeyFor(preferences: TripPreferences) {
+    const fingerprint = preferencesFingerprint(preferences)
+    if (submission.current?.fingerprint !== fingerprint) submission.current = { fingerprint, key: newIdempotencyKey() }
+    return submission.current.key
+  }
+
+  async function createTrip(preferences: TripPreferences, acknowledgeFeasibility = false) {
+    const idempotencyKey = idempotencyKeyFor(preferences)
+    setCreatingTrip(true); setError(''); setFeasibility(null)
+    let created: TripCreateResult
+    try { created = await api.createTrip(preferences, { idempotencyKey, acknowledgeFeasibility }) }
+    catch (reason) { setError(userErrorMessage(reason, 'Could not create that trip.')); return }
+    finally { setCreatingTrip(false) }
+    if (created.status === 'held' || !created.trip_id) { setFeasibility(created.feasibility ?? heldWithoutReport); return }
+    submission.current = null
+    clearTripDraft()
+    localStorage.setItem('travelbuddy.lastTrip', created.trip_id)
+    await beginResearch(created.trip_id, preferences)
+  }
+
+  async function beginResearch(tripId: string, preferences: TripPreferences) {
+    const state: TripState = { trip_id: tripId, preferences }
+    setTrip(state); setRecommendations([]); setSelections([]); setItinerary(null); setAgents(initialAgents); setScreen('workspace')
+    await runResearch(tripId)
   }
 
   async function runResearch(tripId = trip?.trip_id) {
@@ -111,22 +142,34 @@ export default function App() {
     finally { setResearching(false); refreshHealth() }
   }
 
+  async function toggleSelection(id: string) {
+    if (!trip) return
+    const flip = (items: string[]) => items.includes(id) ? items.filter((item) => item !== id) : [...items, id]
+    const next = flip(selections)
+    setSelections(next)
+    try { await api.select(trip.trip_id, next) }
+    catch (reason) { setSelections(flip); setError(userErrorMessage(reason, 'Could not save that choice.')) }
+  }
+
   async function buildItinerary() {
     if (!trip) return
     setBuilding(true); setError('')
     try {
-      await api.select(trip.trip_id, selections)
       await api.itinerary(trip.trip_id, (event) => {
         if (event.event === 'itinerary_complete' && event.itinerary) { setItinerary(event.itinerary); setTrip((current) => current ? { ...current, itinerary: event.itinerary } : current); setScreen('itinerary') }
         if (event.event === 'itinerary_failed') setError(streamErrorMessage(event, 'The itinerary could not be generated.'))
       })
-      const latest = await api.trip(trip.trip_id)
-      if (latest.itinerary) hydrateTrip(latest)
     } catch (reason) { setError(userErrorMessage(reason, 'Could not assemble the itinerary.')) }
     finally { setBuilding(false) }
   }
 
-  async function logout() { await api.logout(); setUser(null); setProfile(null); setTrip(null); setScreen('planner') }
+  function startNewTrip() {
+    setScreen('planner'); setTrip(null); setFeasibility(null); setError('')
+    submission.current = null; clearTripDraft(); localStorage.removeItem('travelbuddy.lastTrip')
+    setFormKey((key) => key + 1)
+  }
+
+  async function logout() { await api.logout(); clearTripDraft(); setUser(null); setProfile(null); setTrip(null); setFeasibility(null); setScreen('planner') }
   async function retake() {
     try { await api.resetIntake() }
     catch (reason) { if (!(reason instanceof ApiError) || reason.status !== 404) throw reason; await api.resetProfile() }
@@ -152,6 +195,8 @@ export default function App() {
     setPendingCheckIn((current) => current?.trip_id === trip.trip_id ? null : current)
   }
 
+  // Full-screen loading is reserved for session bootstrap and opening an existing trip;
+  // trip creation keeps TripForm mounted so nothing the traveler typed is lost.
   if (loading && !trip) return <div className="full-state"><LoadingState /></div>
   if (!user) return <AuthView onAuthenticated={bootstrap} />
   if (!user.intake_complete || !profile) return <Onboarding onComplete={(next) => { setProfile(next); setUser({ ...user, intake_complete: true }); setScreen('planner') }} />
@@ -175,7 +220,7 @@ export default function App() {
         <div className="nav-route"><Compass aria-hidden /><span>{trip ? trip.preferences.destination : 'No active trip'}</span></div>
       </div>
       <div className="nav-actions">
-        <Button variant="quiet" onClick={() => { setScreen('planner'); setTrip(null); localStorage.removeItem('travelbuddy.lastTrip') }}><Plus /> New trip</Button>
+        <Button variant="quiet" onClick={startNewTrip}><Plus /> New trip</Button>
         <HealthIndicator health={health} onRefresh={refreshHealth} />
         <ThemeToggle />
         <button className="icon-button" onClick={toggleTavi} aria-label={taviVisible ? 'Minimize Tavi' : 'Show Tavi'} aria-pressed={!taviVisible}><Sparkles /></button>
@@ -192,8 +237,8 @@ export default function App() {
     /></div>}
     <div id="main">
       {screen === 'planner' && pendingCheckIn && <aside className="pending-checkin" aria-label="Trip check-in"><div><Sparkles /><p><strong>How was {pendingCheckIn.destination}?</strong><span>A quick rating helps Tavi plan the next one better.</span></p></div><Button variant="secondary" onClick={openPendingTrip}>Rate this trip</Button></aside>}
-      {screen === 'planner' && <TripForm onSubmit={createTrip} busy={loading} />}
-      {screen === 'workspace' && trip && <Workspace tripId={trip.trip_id} destination={trip.preferences.destination} preferences={trip.preferences} profile={profile} recommendations={recommendations} agents={agents} researching={researching} selections={selections} companions={[...trip.preferences.cotravellers, ...(trip.preferences.cotraveller_usernames ?? []).map((username) => `@${username}`)]} onToggle={(id) => setSelections((items) => items.includes(id) ? items.filter((item) => item !== id) : [...items, id])} onRetryMissing={() => runResearch()} onFullRefresh={() => runResearch()} onFeedback={async (item, sentiment) => {
+      {screen === 'planner' && <TripForm key={formKey} onSubmit={(preferences) => createTrip(preferences)} busy={creatingTrip} feasibility={feasibility} onProceedAnyway={(preferences) => createTrip(preferences, true)} onDismissWarning={() => setFeasibility(null)} />}
+      {screen === 'workspace' && trip && <Workspace tripId={trip.trip_id} destination={trip.preferences.destination} preferences={trip.preferences} profile={profile} recommendations={recommendations} agents={agents} researching={researching} selections={selections} companions={[...trip.preferences.cotravellers, ...(trip.preferences.cotraveller_usernames ?? []).map((username) => `@${username}`)]} onToggle={toggleSelection} onRetryMissing={() => runResearch()} onFullRefresh={() => runResearch()} onFeedback={async (item, sentiment) => {
         try { const next = await api.feedback(trip.trip_id, item.id, sentiment); setProfile(next) }
         catch (reason) { setError(userErrorMessage(reason, 'Could not save that preference.')); throw reason }
       }} onBuild={buildItinerary} />}

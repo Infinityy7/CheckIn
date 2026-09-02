@@ -35,28 +35,35 @@ function SourceLine({ data }: { data: FlightAvailability }) {
   </span>
 }
 
-function Offer({ tripId, recommendationId, offer, onCartChange, onAdded }: {
+/** The cart is the only source of truth for "Added": the backend keeps one exact offer per transport pick. */
+function savedOfferId(cart: TripCart | null, recommendationId: string) {
+  return cart?.items.find((item) => item.kind === 'flight' && item.recommendationId === recommendationId)?.ratePlanId
+}
+
+function Offer({ tripId, recommendationId, offer, savedId, onCartChange, onAdded }: {
   tripId: string
   recommendationId: string
   offer: FlightOffer
+  savedId?: string
   onCartChange: (cart: TripCart) => void
   onAdded: () => void
 }) {
   const [adding, setAdding] = useState(false)
-  const [added, setAdded] = useState(false)
   const [error, setError] = useState('')
   const unavailable = ['unavailable', 'expired', 'price_changed'].includes(offer.availabilityStatus)
+  const added = savedId === offer.id
+  const replacing = savedId !== undefined && !added
 
   async function add() {
     setAdding(true); setError('')
     try {
-      const cart = await api.addCartItem(tripId, recommendationId, offer.id, 'flight')
-      onCartChange(cart); setAdded(true); onAdded()
+      onCartChange(await api.addCartItem(tripId, recommendationId, offer.id, 'flight'))
+      onAdded()
     } catch (reason) { setError(userErrorMessage(reason, 'That flight could not be saved. Refresh its fare and try again.')) }
     finally { setAdding(false) }
   }
 
-  return <article className={`flight-offer flight-offer--${offer.availabilityStatus}`}>
+  return <article className={`flight-offer flight-offer--${offer.availabilityStatus} ${added ? 'flight-offer--saved' : ''}`}>
     <header><span><Plane /> {offer.carrier}{offer.flightNumber ? ` · ${offer.flightNumber}` : ''}</span><strong>{money(offer.total)}<small>{journeyPriceLabel(offer)}</small></strong></header>
     <div className="flight-route"><div><b>{offer.origin}</b><time dateTime={offer.departAt}>{time(offer.departAt)}</time></div><span><i />{duration(offer.durationMinutes)} · {offer.stops === 0 ? 'Direct' : `${offer.stops} ${offer.stops === 1 ? 'stop' : 'stops'}`}<i /></span><div><b>{offer.destination}</b><time dateTime={offer.arriveAt}>{time(offer.arriveAt)}</time></div></div>
     <div className="flight-offer__meta">
@@ -67,14 +74,15 @@ function Offer({ tripId, recommendationId, offer, onCartChange, onAdded }: {
         expiredLabel={offer.holdExpiresAt ? 'Hold expired — refresh fares' : 'Quote expired — refresh fares'}
       />
     </div>
-    <Button variant={added ? 'secondary' : 'primary'} onClick={add} disabled={adding || added || unavailable}>{added ? <><Check /> Added</> : adding ? 'Adding…' : offer.holdExpiresAt ? 'Add held flight' : 'Save flight quote'}</Button>
+    <Button variant={added ? 'secondary' : 'primary'} onClick={add} disabled={adding || added || unavailable}>{added ? <><Check /> Added</> : adding ? 'Adding…' : replacing ? 'Replace saved flight' : offer.holdExpiresAt ? 'Add held flight' : 'Save flight quote'}</Button>
     {error && <p className="flight-offer__error" role="alert"><AlertTriangle /> {error}</p>}
   </article>
 }
 
-export function FlightOffers({ tripId, recommendation, onCartChange, onAdded }: {
+export function FlightOffers({ tripId, recommendation, cart, onCartChange, onAdded }: {
   tripId: string
   recommendation: Recommendation
+  cart: TripCart | null
   onCartChange: (cart: TripCart) => void
   onAdded: () => void
 }) {
@@ -83,6 +91,7 @@ export function FlightOffers({ tripId, recommendation, onCartChange, onAdded }: 
   const [data, setData] = useState<FlightAvailability | null>(null)
   const [error, setError] = useState('')
   const panelId = `flight-offers-${recommendation.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`
+  const savedId = savedOfferId(cart, recommendation.id)
 
   async function load() {
     setLoading(true); setError('')
@@ -97,12 +106,12 @@ export function FlightOffers({ tripId, recommendation, onCartChange, onAdded }: 
   }
 
   return <section className="flight-inventory">
-    <button className="flight-toggle" type="button" onClick={toggle} aria-expanded={open} aria-controls={panelId}><span><Plane /><b>Flight times & fares</b><small>Check bookable offers for your dates</small></span><ChevronDown aria-hidden="true" /></button>
+    <button className="flight-toggle" type="button" onClick={toggle} aria-expanded={open} aria-controls={panelId}><span><Plane /><b>Flight times & fares</b><small>{savedId ? 'One exact flight saved to your cart' : 'Check bookable offers for your dates'}</small></span><ChevronDown aria-hidden="true" /></button>
     {open && <div className="flight-panel" id={panelId}>
       {loading && <p className="flight-loading" role="status"><Clock3 /> Checking live flight inventory…</p>}
       {!loading && error && <div className="flight-error" role="alert"><WifiOff /><div><strong>Flight search is temporarily unavailable</strong><p>{error}</p></div><Button variant="secondary" onClick={load}><RefreshCw /> Try again</Button></div>}
       {!loading && data && <><header><div><SourceLine data={data} /><p>Checked {time(data.checkedAt)}</p></div><button className="refresh-rates" type="button" onClick={load}><RefreshCw aria-hidden /> Refresh fares</button></header>
-        {data.offers.length ? <div className="flight-offer-list">{data.offers.map((offer) => <Offer key={offer.id} tripId={tripId} recommendationId={recommendation.id} offer={offer} onCartChange={onCartChange} onAdded={onAdded} />)}</div> : <p className="flight-empty">No bookable flights remain for these dates. Nothing has been reserved.</p>}
+        {data.offers.length ? <div className="flight-offer-list">{data.offers.map((offer) => <Offer key={offer.id} tripId={tripId} recommendationId={recommendation.id} offer={offer} savedId={savedId} onCartChange={onCartChange} onAdded={onAdded} />)}</div> : <p className="flight-empty">No bookable flights remain for these dates. Nothing has been reserved.</p>}
       </>}
     </div>}
   </section>

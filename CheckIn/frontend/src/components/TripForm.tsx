@@ -1,9 +1,10 @@
 import '../styles/planner.css'
-import { useCallback, useMemo, useState } from 'react'
-import { ArrowRight, CalendarDays, CircleDollarSign, MapPin, Navigation, Sparkles, Users } from 'lucide-react'
-import type { TripPreferences } from '../types'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { ArrowRight, CalendarDays, CircleDollarSign, LoaderCircle, MapPin, Navigation, Sparkles, Users } from 'lucide-react'
+import type { FeasibilityReport, TripPreferences } from '../types'
+import { loadTripDraft, saveTripDraft } from '../services/tripDraft'
 import { Mascot } from './Mascot'
-import { Button, SegmentedControl } from './UI'
+import { Banner, Button, SegmentedControl } from './UI'
 import { CompanionManager } from './CompanionManager'
 
 /** Full backend vibe list (schemas.ALLOWED_VIBES) — keep in sync. */
@@ -11,19 +12,46 @@ const VIBES = ['adventure', 'culture', 'food', 'nightlife', 'relaxation', 'natur
 
 const GROUPS = ['solo', 'couple', 'friends', 'family'] as const
 const CURRENCIES = ['USD', 'EUR', 'GBP', 'INR', 'JPY', 'AUD', 'CAD'] as const
+const DRAFT_SAVE_DELAY_MS = 300
 
 function isoDate(offset: number) {
   const date = new Date(); date.setDate(date.getDate() + offset); return date.toISOString().slice(0, 10)
 }
 
-export function TripForm({ onSubmit, busy }: { onSubmit: (preferences: TripPreferences) => void; busy: boolean }) {
-  const [form, setForm] = useState<TripPreferences>({
+function defaultForm(): TripPreferences {
+  return {
     destination: '', origin: '', start_date: isoDate(30), end_date: isoDate(36), budget_amount: 2200,
     currency: 'USD', vibes: ['culture', 'food', 'nature'], group_type: 'couple', num_travelers: 2,
     cotravellers: [], cotraveller_usernames: [],
-  })
-  const [guests, setGuests] = useState<string[]>([])
+  }
+}
+
+function initialState(): { form: TripPreferences; guests: string[] } {
+  const base = defaultForm()
+  const draft = loadTripDraft()
+  if (!draft) return { form: base, guests: [] }
+  const form = { ...base, ...draft.form }
+  if (form.start_date < isoDate(0)) { form.start_date = base.start_date; form.end_date = base.end_date }
+  return { form, guests: draft.guests }
+}
+
+export function TripForm({ onSubmit, busy, feasibility, onProceedAnyway, onDismissWarning }: {
+  onSubmit: (preferences: TripPreferences) => void | Promise<void>
+  busy: boolean
+  feasibility?: FeasibilityReport | null
+  onProceedAnyway?: (preferences: TripPreferences) => void | Promise<void>
+  onDismissWarning?: () => void
+}) {
+  const [initial] = useState(initialState)
+  const [form, setForm] = useState<TripPreferences>(initial.form)
+  const [guests, setGuests] = useState<string[]>(initial.guests)
   const [blockers, setBlockers] = useState<string[]>([])
+
+  useEffect(() => {
+    if (form === initial.form && guests === initial.guests) return
+    const timer = window.setTimeout(() => saveTripDraft({ form, guests }), DRAFT_SAVE_DELAY_MS)
+    return () => window.clearTimeout(timer)
+  }, [form, guests, initial])
 
   const usernames = form.cotraveller_usernames
   const partySize = guests.length + usernames.length + 1
@@ -60,12 +88,33 @@ export function TripForm({ onSubmit, busy }: { onSubmit: (preferences: TripPrefe
   const gate = solo ? [] : blockers
   const blocked = busy || !form.vibes.length || gate.length > 0
 
-  const submit = () => onSubmit({
+  const hasSuggestion = Boolean(
+    feasibility?.suggested_changes.budget_amount
+    || feasibility?.suggested_changes.end_date
+    || feasibility?.suggested_changes.destination,
+  )
+  const applySuggestion = () => {
+    const changes = feasibility?.suggested_changes
+    if (!changes) return
+    setForm((current) => ({
+      ...current,
+      ...(changes.budget_amount ? { budget_amount: changes.budget_amount } : {}),
+      ...(changes.end_date ? { end_date: changes.end_date } : {}),
+      ...(changes.destination ? { destination: changes.destination } : {}),
+    }))
+    onDismissWarning?.()
+  }
+
+  const payload = (): TripPreferences => ({
     ...form,
     num_travelers: solo ? 1 : form.num_travelers,
     cotravellers: solo ? [] : guests,
     cotraveller_usernames: solo ? [] : usernames,
   })
+  const submit = (send: (preferences: TripPreferences) => void | Promise<void>) => {
+    saveTripDraft({ form, guests })
+    void send(payload())
+  }
 
   return <main className="planner page-stage">
     <section className="planner-intro">
@@ -79,7 +128,16 @@ export function TripForm({ onSubmit, busy }: { onSubmit: (preferences: TripPrefe
         <div className="mascot-note">I’ll look for the places that match your pace—not just the places everyone posts.</div>
       </div>
     </section>
-    <form className="trip-form corner-tick" onSubmit={(event) => { event.preventDefault(); submit() }}>
+    {feasibility && <div className="feasibility-banner"><Banner
+      tone="warn"
+      title="This trip probably won’t fit its budget"
+      detail={[feasibility.reason, feasibility.suggestion_text].filter(Boolean).join(' ')}
+      action={<div className="feasibility-actions">
+        {hasSuggestion && <Button variant="secondary" onClick={applySuggestion} disabled={busy}>Apply suggestion</Button>}
+        <Button variant="secondary" onClick={() => { if (onProceedAnyway) submit(onProceedAnyway) }} disabled={blocked}>Research anyway</Button>
+      </div>}
+    /></div>}
+    <form className="trip-form corner-tick" aria-busy={busy} onSubmit={(event) => { event.preventDefault(); submit(onSubmit) }}>
       <div className="trip-form__primary">
         <label className="field field--large">
           <MapPin aria-hidden /><span>Destination</span>
@@ -140,6 +198,7 @@ export function TripForm({ onSubmit, busy }: { onSubmit: (preferences: TripPrefe
           {gate.length > 0 && <p className="gate-note" role="status">
             Waiting on taste profiles: {gate.join(' · ')}. Guests can be profiled right here with “Profile now” — linked members finish their own intake in their account.
           </p>}
+          {busy && <p className="submit-status" role="status"><LoaderCircle className="spin" aria-hidden /> Checking this route’s feasibility — your details stay right here.</p>}
         </div>
         <Button type="submit" disabled={blocked}>{busy ? 'Opening a workspace…' : 'Research my trip'} <ArrowRight aria-hidden /></Button>
       </footer>

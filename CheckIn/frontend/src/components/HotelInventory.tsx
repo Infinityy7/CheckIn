@@ -30,29 +30,36 @@ function availabilityCopy(rate: HotelRatePlan) {
   return 'Available for your dates'
 }
 
-function RatePlan({ tripId, recommendationId, rate, onCartChange, onAdded }: {
+/** The cart is the only source of truth for "Added": the backend keeps one exact rate per hotel. */
+function savedRatePlanId(cart: TripCart | null, recommendationId: string) {
+  return cart?.items.find((item) => item.kind === 'hotel' && item.recommendationId === recommendationId)?.ratePlanId
+}
+
+function RatePlan({ tripId, recommendationId, rate, savedId, onCartChange, onAdded }: {
   tripId: string
   recommendationId: string
   rate: HotelRatePlan
+  savedId?: string
   onCartChange: (cart: TripCart) => void
   onAdded?: () => void
 }) {
   const [adding, setAdding] = useState(false)
-  const [added, setAdded] = useState(false)
   const [error, setError] = useState('')
   const unavailable = ['unavailable', 'expired', 'price_changed'].includes(rate.availabilityStatus)
+  const added = savedId === rate.id
+  const replacing = savedId !== undefined && !added
 
   async function add() {
     setAdding(true); setError('')
     try {
-      const cart = await api.addCartItem(tripId, recommendationId, rate.id, 'hotel')
-      onCartChange(cart); setAdded(true); onAdded?.()
+      onCartChange(await api.addCartItem(tripId, recommendationId, rate.id, 'hotel'))
+      onAdded?.()
     } catch (reason) {
       setError(userErrorMessage(reason, 'That room could not be added. Refresh its price and try again.'))
     } finally { setAdding(false) }
   }
 
-  return <article className={`rate-plan rate-plan--${rate.availabilityStatus}`} aria-label={`${rate.label} rate`}>
+  return <article className={`rate-plan rate-plan--${rate.availabilityStatus} ${added ? 'rate-plan--saved' : ''}`} aria-label={`${rate.label} rate`}>
     <div className="rate-plan__copy">
       <div className="rate-plan__title">
         <strong>{rate.label}</strong>
@@ -74,17 +81,18 @@ function RatePlan({ tripId, recommendationId, rate, onCartChange, onAdded }: {
     </div>
     <div className="rate-plan__action">
       <Button variant={added ? 'secondary' : 'primary'} onClick={add} disabled={unavailable || adding || added}>
-        {added ? <><Check /> Added</> : adding ? 'Adding…' : rate.holdExpiresAt ? 'Add held room' : 'Save quoted rate'}
+        {added ? <><Check /> Added</> : adding ? 'Adding…' : replacing ? 'Replace saved rate' : rate.holdExpiresAt ? 'Add held room' : 'Save quoted rate'}
       </Button>
-      <small>{rate.holdExpiresAt ? 'Supplier-confirmed hold' : 'Availability is rechecked before booking'}</small>
+      <small>{added ? 'This exact rate is in your cart' : replacing ? 'Your cart keeps one rate per hotel' : rate.holdExpiresAt ? 'Supplier-confirmed hold' : 'Availability is rechecked before booking'}</small>
     </div>
     {error && <p className="rate-plan__error" role="alert"><AlertTriangle /> {error}</p>}
   </article>
 }
 
-export function HotelInventory({ tripId, recommendation, onCartChange, onAdded }: {
+export function HotelInventory({ tripId, recommendation, cart, onCartChange, onAdded }: {
   tripId: string
   recommendation: Recommendation
+  cart: TripCart | null
   onCartChange: (cart: TripCart) => void
   onAdded?: () => void
 }) {
@@ -93,6 +101,7 @@ export function HotelInventory({ tripId, recommendation, onCartChange, onAdded }
   const [availability, setAvailability] = useState<HotelAvailability | null>(null)
   const [error, setError] = useState('')
   const panelId = `hotel-rates-${recommendation.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`
+  const savedId = savedRatePlanId(cart, recommendation.id)
 
   async function load() {
     setLoading(true); setError('')
@@ -111,7 +120,7 @@ export function HotelInventory({ tripId, recommendation, onCartChange, onAdded }
 
   return <section className="hotel-inventory">
     <button className="inventory-toggle" type="button" aria-expanded={open} aria-controls={panelId} onClick={toggle}>
-      <span><BedSingle /><b>Rooms & booking prices</b><small>Check availability for your exact dates</small></span>
+      <span><BedSingle /><b>Rooms & booking prices</b><small>{savedId ? 'One exact rate saved to your cart' : 'Check availability for your exact dates'}</small></span>
       <ChevronDown aria-hidden="true" />
     </button>
     {open && <div className="inventory-panel" id={panelId}>
@@ -127,7 +136,7 @@ export function HotelInventory({ tripId, recommendation, onCartChange, onAdded }
         </header>
         {availability.rooms.length ? <div className="room-list">{availability.rooms.map((room) => <section className="room-type" key={room.id}>
           <header><div><span className="eyebrow">Room type</span><h4>{room.name}</h4><p>{room.description}</p></div><div className="room-facts"><span><UsersRound /> Up to {room.occupancy.maxGuests}</span><span><BedSingle /> {room.beds.map((bed) => `${bed.count} ${bed.type}`).join(' · ') || 'Bed details on request'}</span><span>{room.board || 'Room only'}</span></div></header>
-          <div className="rate-list">{room.ratePlans.map((rate) => <RatePlan key={rate.id} tripId={tripId} recommendationId={recommendation.id} rate={rate} onCartChange={onCartChange} onAdded={onAdded} />)}</div>
+          <div className="rate-list">{room.ratePlans.map((rate) => <RatePlan key={rate.id} tripId={tripId} recommendationId={recommendation.id} rate={rate} savedId={savedId} onCartChange={onCartChange} onAdded={onAdded} />)}</div>
         </section>)}</div> : <div className="inventory-empty"><AlertTriangle /><div><strong>No rooms remain for these dates.</strong><p>Try alternatives or adjust your dates. Nothing has been reserved.</p></div></div>}
       </>}
     </div>}

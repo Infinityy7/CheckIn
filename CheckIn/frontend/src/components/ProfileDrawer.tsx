@@ -1,8 +1,8 @@
 import '../styles/identity.css'
 import { useEffect, useState } from 'react'
-import { RotateCcw, Save, Sparkles, Users } from 'lucide-react'
+import { Check, CircleCheck, RotateCcw, Save, Sparkles, Users, X } from 'lucide-react'
 import { api, userErrorMessage } from '../services/api'
-import type { CharacterProfile, CharacterTraits, DefaultParty, ProfileWeights, SpendCategory, TravelerArchetype, Vibe } from '../types'
+import type { CharacterProfile, CharacterTraits, CompanionLink, CompanionLinks, DefaultParty, ProfileWeights, SpendCategory, TravelerArchetype, Vibe } from '../types'
 import { Mascot } from './Mascot'
 import { Button, Chip, Drawer } from './UI'
 
@@ -77,6 +77,9 @@ export function ProfileDrawer({ open, profile, onClose, onUpdate, onRetake }: { 
   const [error, setError] = useState('')
   const [companions, setCompanions] = useState<string[] | null>(null)
   const [companionsError, setCompanionsError] = useState('')
+  const [links, setLinks] = useState<CompanionLinks | null>(null)
+  const [linksError, setLinksError] = useState('')
+  const [linkBusy, setLinkBusy] = useState<string | null>(null)
 
   useEffect(() => {
     if (!open) return
@@ -84,6 +87,9 @@ export function ProfileDrawer({ open, profile, onClose, onUpdate, onRetake }: { 
     api.profileOverview()
       .then((overview) => { if (!cancelled) { setCompanions(overview.cotravellers); setCompanionsError('') } })
       .catch((reason: unknown) => { if (!cancelled) setCompanionsError(userErrorMessage(reason, 'Could not load your travel companions.')) })
+    api.companionLinks()
+      .then((rows) => { if (!cancelled) { setLinks(rows); setLinksError('') } })
+      .catch((reason: unknown) => { if (!cancelled) setLinksError(userErrorMessage(reason, 'Could not load your travel invitations.')) })
     return () => { cancelled = true }
   }, [open])
 
@@ -106,6 +112,29 @@ export function ProfileDrawer({ open, profile, onClose, onUpdate, onRetake }: { 
     finally { setSaving(false) }
   }
 
+  const replaceLink = (updated: CompanionLink) => setLinks((current) => current ? {
+    incoming: current.incoming.map((row) => row.link_id === updated.link_id ? updated : row),
+    outgoing: current.outgoing.map((row) => row.link_id === updated.link_id ? updated : row),
+  } : current)
+  async function respondToInvitation(link: CompanionLink, action: 'accept' | 'decline') {
+    setLinkBusy(link.link_id); setLinksError('')
+    try { replaceLink(await api.respondCompanionLink(link.link_id, action)) }
+    catch (reason) { setLinksError(userErrorMessage(reason, 'Could not update that invitation.')) }
+    finally { setLinkBusy(null) }
+  }
+  async function stopSharing(link: CompanionLink) {
+    setLinkBusy(link.link_id); setLinksError('')
+    try { replaceLink(await api.removeCompanionLink(link.link_id)) }
+    catch (reason) { setLinksError(userErrorMessage(reason, 'Could not remove that companion.')) }
+    finally { setLinkBusy(null) }
+  }
+
+  const invitations = links?.incoming.filter((row) => row.status === 'pending') ?? []
+  const sharingWith = links?.incoming.filter((row) => row.status === 'accepted') ?? []
+  const sharedWithMe = links?.outgoing.filter((row) => row.status === 'accepted') ?? []
+  const awaiting = links?.outgoing.filter((row) => row.status === 'pending') ?? []
+  const linkedCount = invitations.length + sharingWith.length + sharedWithMe.length + awaiting.length
+
   return <Drawer open={open} title="Your travel character" onClose={onClose}>
     <div className="idn-drawer-intro"><Mascot state="neutral" size="md" /><p>Your character sketch guides discovery. The structured controls below shape ranking and hard filters.</p></div>
     <label className="idn-summary"><span><Sparkles aria-hidden /> Character sketch</span><textarea value={draft.summary} onChange={(event) => setDraft({ ...draft, summary: event.target.value })} rows={8} /></label>
@@ -115,14 +144,38 @@ export function ProfileDrawer({ open, profile, onClose, onUpdate, onRetake }: { 
     </> : null}
 
     <section className="idn-section" aria-label="Travel companions">
-      <div className="idn-section__head"><div><strong><Users aria-hidden size={15} /> Travel companions</strong><small>Read-only here — companions shape group ranking once profiled.</small></div></div>
-      {companionsError
-        ? <p className="form-error" role="alert">{companionsError}</p>
-        : companions === null
-          ? <p className="idn-companions-empty" role="status">Loading companions…</p>
-          : companions.length === 0
-            ? <p className="idn-companions-empty">No companions saved yet.</p>
-            : <div className="idn-companions">{companions.map((name) => <Chip key={name} tone="ok">{label(name)}</Chip>)}</div>}
+      <div className="idn-section__head"><div><strong><Users aria-hidden size={15} /> Travel companions</strong><small>Invitations decide whose taste profile a trip may use. Accepting shares your compiled taste with that organizer’s research — never your sketch text.</small></div></div>
+      {linksError && <p className="form-error" role="alert">{linksError}</p>}
+      {links === null && !linksError
+        ? <p className="idn-companions-empty" role="status">Loading invitations…</p>
+        : links && <>
+          {invitations.length > 0 && <ul className="idn-invites" aria-label="Invitations waiting for you">
+            {invitations.map((link) => <li key={link.link_id} className="idn-invite">
+              <span className="idn-invite__who"><strong>{`@${link.username}`}</strong><small>{link.name ? `${link.name} · ` : ''}wants to plan trips with your taste profile</small></span>
+              <span className="idn-invite__actions">
+                <Button type="button" disabled={linkBusy === link.link_id} onClick={() => void respondToInvitation(link, 'accept')}><Check aria-hidden /> Accept</Button>
+                <Button type="button" variant="quiet" disabled={linkBusy === link.link_id} onClick={() => void respondToInvitation(link, 'decline')}>Decline</Button>
+              </span>
+            </li>)}
+          </ul>}
+          {sharingWith.length > 0 && <div className="idn-companions__group"><span>Can plan with your profile</span><div className="idn-companions">{sharingWith.map((link) => <span key={link.link_id} className="idn-linked">
+            <Chip tone="ok" icon={<CircleCheck aria-hidden />}>{`@${link.username}`}</Chip>
+            <button type="button" className="icon-button idn-linked__remove" aria-label={`Stop sharing your profile with @${link.username}`} disabled={linkBusy === link.link_id} onClick={() => void stopSharing(link)}><X aria-hidden /></button>
+          </span>)}</div></div>}
+          {sharedWithMe.length > 0 && <div className="idn-companions__group"><span>Share their profile with you</span><div className="idn-companions">{sharedWithMe.map((link) => <Chip key={link.link_id} tone="ok" icon={<CircleCheck aria-hidden />}>{`@${link.username}`}</Chip>)}</div></div>}
+          {awaiting.length > 0 && <div className="idn-companions__group"><span>Waiting on their answer</span><div className="idn-companions">{awaiting.map((link) => <Chip key={link.link_id} tone="muted">{`@${link.username} · invitation pending`}</Chip>)}</div></div>}
+          {linkedCount === 0 && <p className="idn-companions-empty">No linked companions yet — invite them from the trip planner.</p>}
+        </>}
+      <div className="idn-companions__group">
+        <span>Guests you’ve profiled</span>
+        {companionsError
+          ? <p className="form-error" role="alert">{companionsError}</p>
+          : companions === null
+            ? <p className="idn-companions-empty" role="status">Loading companions…</p>
+            : companions.length === 0
+              ? <p className="idn-companions-empty">No companions saved yet.</p>
+              : <div className="idn-companions">{companions.map((name) => <Chip key={name} tone="ok">{label(name)}</Chip>)}</div>}
+      </div>
       <p className="idn-note">Add or profile companions from the trip planner.</p>
     </section>
 

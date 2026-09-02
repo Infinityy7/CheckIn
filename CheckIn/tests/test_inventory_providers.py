@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 
 import httpx
@@ -385,6 +385,112 @@ def test_duffel_flight_place_lookup_request_shape_and_normalization():
     assert offer.journey_type == "round_trip"
     assert offer.total.amount == 902.40
     assert offer.availability_status == AvailabilityStatus.AVAILABLE
+    # The second slice is the return leg; it is normalized with the same rules.
+    assert offer.return_carrier == "Test Air"
+    assert offer.return_flight_number is None
+    assert offer.return_origin == "NRT"
+    assert offer.return_destination == "BOM"
+    assert offer.return_depart_at == datetime(2026, 9, 20, 9, 30, tzinfo=timezone.utc)
+    assert offer.return_arrive_at == datetime(2026, 9, 20, 17, 30, tzinfo=timezone.utc)
+    assert offer.return_duration_minutes == 480
+    assert offer.return_stops == 0
+
+
+RETURN_FIELDS = (
+    "return_carrier",
+    "return_flight_number",
+    "return_origin",
+    "return_destination",
+    "return_depart_at",
+    "return_arrive_at",
+    "return_duration_minutes",
+    "return_stops",
+)
+
+
+def one_way_offer_payload() -> dict[str, Any]:
+    return {
+        "id": "offer-1",
+        "total_amount": "100.00",
+        "total_currency": "USD",
+        "expires_at": "2099-08-01T12:30:00Z",
+        "slices": [
+            {
+                "segments": [
+                    {
+                        "departing_at": "2026-09-12T08:00:00Z",
+                        "arriving_at": "2026-09-12T09:00:00Z",
+                        "origin": {"iata_code": "JFK"},
+                        "destination": {"iata_code": "LHR"},
+                        "operating_carrier": {"name": "Example Air"},
+                    }
+                ]
+            }
+        ],
+    }
+
+
+def search_offers(offers: list[dict[str, Any]], *, return_date: date | None):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/air/offer_requests"
+        return httpx.Response(200, json={"data": {"live_mode": False, "offers": offers}})
+
+    async def scenario():
+        async with mock_client(handler) as client:
+            provider = DuffelProvider("token", http_client=client)
+            return await provider.search_flight_inventory(
+                recommendation_id="rec",
+                origin="JFK",
+                destination="LHR",
+                departure_date=date(2026, 9, 12),
+                return_date=return_date,
+                adults=1,
+            )
+
+    return run(scenario())
+
+
+def test_duffel_single_slice_leaves_return_fields_unknown():
+    inventory = search_offers([one_way_offer_payload()], return_date=None)
+
+    offer = inventory.offers[0]
+    assert offer.journey_type == "one_way"
+    assert all(getattr(offer, field) is None for field in RETURN_FIELDS)
+
+
+@pytest.mark.parametrize(
+    "return_slice, message",
+    [
+        ({"segments": []}, "return slice did not contain segments"),
+        ("not-a-slice", "return slice did not contain segments"),
+        (
+            {"segments": [{
+                "departing_at": "2026-09-20T09:30:00Z",
+                "arriving_at": "2026-09-20T17:30:00Z",
+                "origin": {"iata_code": "LHR"},
+                "destination": {"name": "No IATA here"},
+                "operating_carrier": {"name": "Example Air"},
+            }]},
+            "missing an airport code",
+        ),
+        (
+            {"segments": [{
+                "departing_at": "not-a-time",
+                "arriving_at": "2026-09-20T17:30:00Z",
+                "origin": {"iata_code": "LHR"},
+                "destination": {"iata_code": "JFK"},
+                "operating_carrier": {"name": "Example Air"},
+            }]},
+            "invalid timestamp",
+        ),
+    ],
+)
+def test_duffel_fails_closed_on_malformed_return_slice(return_slice, message):
+    offer = one_way_offer_payload()
+    offer["slices"].append(return_slice)
+
+    with pytest.raises(ProviderDataError, match=message):
+        search_offers([offer], return_date=date(2026, 9, 20))
 
 
 def test_duffel_iata_places_bypass_lookup_and_limit_is_applied():
@@ -667,12 +773,49 @@ def test_demo_provider_is_explicitly_non_live_across_inventory_and_quotes():
         and offer.source_metadata["demo"] is True
         for offer in flight.offers
     )
+    assert all(
+        offer.journey_type == "one_way"
+        and all(getattr(offer, field) is None for field in RETURN_FIELDS)
+        for offer in flight.offers
+    )
     assert hotel_quote.source_mode == SourceMode.DEMO
     assert hotel_quote.is_live is False
     assert hotel_quote.raw_status == "demo_quote"
     assert flight_quote.source_mode == SourceMode.DEMO
     assert flight_quote.is_live is False
     assert flight_quote.raw_status == "demo_quote"
+
+
+def test_demo_provider_fills_deterministic_return_leg_for_round_trips():
+    provider = DemoProvider(clock=lambda: NOW)
+
+    def search():
+        return provider.search_flight_inventory(
+            recommendation_id="flight-rec",
+            origin="Mumbai",
+            destination="Tokyo",
+            departure_date=date(2026, 9, 12),
+            return_date=date(2026, 9, 20),
+            adults=2,
+        )
+
+    first, second = run(search()), run(search())
+    assert first.model_dump() == second.model_dump()
+
+    for offer in first.offers:
+        assert offer.journey_type == "round_trip"
+        assert offer.return_carrier == offer.carrier
+        assert offer.return_flight_number.startswith("DM")
+        assert offer.return_flight_number != offer.flight_number
+        assert offer.return_origin == offer.destination == "TOK"
+        assert offer.return_destination == offer.origin == "MUM"
+        assert offer.return_depart_at.date() == date(2026, 9, 20)
+        assert offer.return_depart_at > offer.arrive_at
+        assert offer.return_duration_minutes >= 150
+        assert offer.return_arrive_at == offer.return_depart_at + timedelta(
+            minutes=offer.return_duration_minutes
+        )
+        assert offer.return_stops == offer.stops
 
 
 def test_unavailable_provider_and_unknown_demo_ids_fail_closed():

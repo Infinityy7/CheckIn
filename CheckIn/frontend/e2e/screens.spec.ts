@@ -311,7 +311,7 @@ test('a couple trip gates research on the companion taste intake and submits cot
     return json(route, { reply: done ? 'That completes Priya’s sketch — rankings will balance you both.' : `Question ${chat.answered + 1}: how does Priya like to travel?`, done })
   })
   let submitted: { cotravellers?: string[]; cotraveller_usernames?: string[] } | null = null
-  await page.route('**/api/trip/preferences', (route) => { submitted = route.request().postDataJSON() as typeof submitted; return json(route, { trip_id: 'trip-cotrav' }) })
+  await page.route('**/api/trip/preferences', (route) => { submitted = route.request().postDataJSON() as typeof submitted; return json(route, { trip_id: 'trip-cotrav', status: 'received', replayed: false }) })
   await page.route('**/api/trip/trip-cotrav/research', (route) => sse(route, [
     { event: 'research_started', agents: Object.values(agentNames) },
     ...categories.map((category) => ({ event: 'agent_completed', agent: agentNames[category], results: recommendations.filter((item) => item.category === category) })),
@@ -357,12 +357,12 @@ test('a couple trip links members by username, blocks on unprofiled accounts, an
   await session(page)
   await page.route('**/api/users/lookup*', (route) => {
     const username = new URL(route.request().url()).searchParams.get('username')?.toLowerCase() ?? ''
-    if (username === 'priya_k') return json(route, { username: 'priya_k', name: 'Priya Kapoor', intake_complete: true })
-    if (username === 'sam') return json(route, { username: 'sam', name: 'Sam Verma', intake_complete: false })
+    if (username === 'priya_k') return json(route, { username: 'priya_k', name: 'Priya Kapoor', intake_complete: true, link_status: 'accepted' })
+    if (username === 'sam') return json(route, { username: 'sam', name: 'Sam Verma', intake_complete: false, link_status: 'accepted' })
     return json(route, { detail: 'No CheckIn user with that username.' }, 404)
   })
   let submitted: { cotravellers?: string[]; cotraveller_usernames?: string[] } | null = null
-  await page.route('**/api/trip/preferences', (route) => { submitted = route.request().postDataJSON() as typeof submitted; return json(route, { trip_id: 'trip-linked' }) })
+  await page.route('**/api/trip/preferences', (route) => { submitted = route.request().postDataJSON() as typeof submitted; return json(route, { trip_id: 'trip-linked', status: 'received', replayed: false }) })
   await page.route('**/api/trip/trip-linked/research', (route) => sse(route, [
     { event: 'research_started', agents: Object.values(agentNames) },
     ...categories.map((category) => ({ event: 'agent_completed', agent: agentNames[category], results: recommendations.filter((item) => item.category === category) })),

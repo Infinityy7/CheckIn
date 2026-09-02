@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { api } from '../services/api'
+import { ApiError, api } from '../services/api'
 import type { TripCart as TripCartModel } from '../types'
-import { TripCart } from './TripCart'
+import { CART_REFRESHED_NOTICE, TripCart } from './TripCart'
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -65,14 +65,43 @@ it('shows the revalidate button as busy while the cart is being rechecked', () =
   expect(screen.getByRole('button', { name: /Checking…/i })).toBeDisabled()
 })
 
-it('removes an individual cart item through the typed cart service', async () => {
-  const before: TripCartModel = { tripId: 'trip-1', state: 'open', checkedAt: new Date().toISOString(), items: [{ id: 'saved', recommendationId: 'hotel-1', kind: 'hotel', title: 'Garden room', status: 'saved' }] }
-  const after: TripCartModel = { ...before, items: [] }
+it('removes an individual cart item through the typed cart service, guarding with the cart version', async () => {
+  const before: TripCartModel = { tripId: 'trip-1', version: 3, state: 'open', checkedAt: new Date().toISOString(), items: [{ id: 'saved', recommendationId: 'hotel-1', kind: 'hotel', title: 'Garden room', status: 'saved' }] }
+  const after: TripCartModel = { ...before, version: 4, items: [] }
   const remove = vi.spyOn(api, 'removeCartItem').mockResolvedValue(after)
   const onCartChange = vi.fn()
   render(<TripCart tripId="trip-1" cart={before} loading={false} error="" onCartChange={onCartChange} onError={vi.fn()} />)
 
   fireEvent.click(screen.getByRole('button', { name: /Remove Garden room from cart/i }))
-  await waitFor(() => expect(remove).toHaveBeenCalledWith('trip-1', 'saved'))
+  await waitFor(() => expect(remove).toHaveBeenCalledWith('trip-1', 'saved', 3))
   expect(onCartChange).toHaveBeenCalledWith(after)
+})
+
+it('refetches the cart and explains when a removal hits a version conflict', async () => {
+  const stale: TripCartModel = { tripId: 'trip-1', version: 2, state: 'open', checkedAt: new Date().toISOString(), items: [{ id: 'saved', recommendationId: 'hotel-1', kind: 'hotel', title: 'Garden room', status: 'saved' }] }
+  const fresh: TripCartModel = { ...stale, version: 5, items: [{ ...stale.items[0], title: 'Garden room (rechecked)' }] }
+  vi.spyOn(api, 'removeCartItem').mockRejectedValue(new ApiError('Your cart changed elsewhere. Refresh it and try again.', 409, 'CART_VERSION_CONFLICT', 'req-1', true))
+  const refetch = vi.spyOn(api, 'cart').mockResolvedValue(fresh)
+  const onCartChange = vi.fn(); const onError = vi.fn()
+  render(<TripCart tripId="trip-1" cart={stale} loading={false} error="" onCartChange={onCartChange} onError={onError} />)
+
+  fireEvent.click(screen.getByRole('button', { name: /Remove Garden room from cart/i }))
+
+  await waitFor(() => expect(refetch).toHaveBeenCalledWith('trip-1'))
+  await waitFor(() => expect(onCartChange).toHaveBeenCalledWith(fresh))
+  expect(await screen.findByRole('status')).toHaveTextContent(CART_REFRESHED_NOTICE)
+  expect(onError).not.toHaveBeenCalledWith(expect.stringContaining('could not be removed'))
+})
+
+it('reports ordinary removal failures through onError', async () => {
+  const cart: TripCartModel = { tripId: 'trip-1', version: 1, state: 'open', checkedAt: new Date().toISOString(), items: [{ id: 'saved', recommendationId: 'hotel-1', kind: 'hotel', title: 'Garden room', status: 'saved' }] }
+  vi.spyOn(api, 'removeCartItem').mockRejectedValue(new ApiError('That cart item does not exist.', 404, 'NOT_FOUND', 'req-2', false))
+  const refetch = vi.spyOn(api, 'cart')
+  const onError = vi.fn()
+  render(<TripCart tripId="trip-1" cart={cart} loading={false} error="" onCartChange={vi.fn()} onError={onError} />)
+
+  fireEvent.click(screen.getByRole('button', { name: /Remove Garden room from cart/i }))
+
+  await waitFor(() => expect(onError).toHaveBeenCalledWith(expect.stringContaining('That cart item does not exist.')))
+  expect(refetch).not.toHaveBeenCalled()
 })

@@ -3,12 +3,12 @@ import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, ArrowRight, BedDouble, Bike, Check, ChevronRight, Clock3, Coffee, Map, RefreshCw, Sparkles, Star, ThumbsDown, ThumbsUp, TrainFront, Users, UtensilsCrossed } from 'lucide-react'
 import type { CharacterProfile, Recommendation, TripCart as TripCartModel, TripPreferences } from '../types'
 import { cacheInfo } from '../types'
-import { api, userErrorMessage } from '../services/api'
+import { ApiError, api, userErrorMessage } from '../services/api'
 import { Mascot } from './Mascot'
 import { Banner, Button, CachedBadge, Chip, EmptyState, Meter, Modal } from './UI'
 import { HotelInventory } from './HotelInventory'
 import { TransportJourney } from './TransportJourney'
-import { TripCart } from './TripCart'
+import { CART_REFRESHED_NOTICE, TripCart } from './TripCart'
 
 export type AgentStatus = Record<string, 'waiting' | 'working' | 'complete' | 'failed'>
 type Sentiment = 'like' | 'dislike'
@@ -27,15 +27,19 @@ const rankedSignals = [
   ['vibes', 'Vibes'],
 ] as const
 
+/** Categories whose selection is mirrored by a cart item; removing that item deselects the card. */
+const cartBackedCategories = new Set<Recommendation['category']>(['transport', 'restaurant'])
+
 function scoreLabel(score: number) { return `${Math.round(score * 100)}%` }
 
-function RecommendationCard({ tripId, preferences, item, selected, companions, noted, onSelect, onInventorySelect, onFeedback, onCartChange }: {
+function RecommendationCard({ tripId, preferences, item, selected, companions, noted, cart, onSelect, onInventorySelect, onFeedback, onCartChange }: {
   tripId: string
   preferences: TripPreferences
   item: Recommendation
   selected: boolean
   companions: string[]
   noted: Sentiment | null
+  cart: TripCartModel | null
   onSelect: () => void | Promise<void>
   onInventorySelect: () => void
   onFeedback: (sentiment: Sentiment) => Promise<void>
@@ -89,7 +93,7 @@ function RecommendationCard({ tripId, preferences, item, selected, companions, n
           {companions.length > 0 && <p className="wk-ranked__note">Options that clashed with anyone's no-gos or diets were removed before ranking.</p>}
         </div>
       </details>}
-      {item.category === 'transport' && <TransportJourney tripId={tripId} recommendation={item} preferences={preferences} onCartChange={onCartChange} onFlightAdded={() => { if (!selected) onInventorySelect() }} />}
+      {item.category === 'transport' && <TransportJourney tripId={tripId} recommendation={item} preferences={preferences} cart={cart} onCartChange={onCartChange} onFlightAdded={() => { if (!selected) onInventorySelect() }} />}
       <div className="wk-card__footer">
         <div className="wk-feedback" role="group" aria-label={`Feedback on ${item.name}`}>
           <button type="button" className={`wk-feedback__button ${noted === 'like' ? 'is-noted' : ''}`} aria-pressed={noted === 'like'} aria-label={`More like this: ${item.name}`} title="More like this" disabled={sending !== null} onClick={() => void sendFeedback('like')}><ThumbsUp aria-hidden /></button>
@@ -100,7 +104,7 @@ function RecommendationCard({ tripId, preferences, item, selected, companions, n
       </div>
       {choiceError && <p className="wk-card__error" role="alert"><AlertTriangle aria-hidden /> {choiceError}</p>}
     </div>
-    {item.category === 'hotel' && <HotelInventory tripId={tripId} recommendation={item} onCartChange={onCartChange} onAdded={() => { if (!selected) onInventorySelect() }} />}
+    {item.category === 'hotel' && <HotelInventory tripId={tripId} recommendation={item} cart={cart} onCartChange={onCartChange} onAdded={() => { if (!selected) onInventorySelect() }} />}
   </article>
 }
 
@@ -114,7 +118,7 @@ export function Workspace({ tripId, destination, preferences, profile, recommend
   researching: boolean
   selections: string[]
   companions: string[]
-  onToggle: (id: string) => void
+  onToggle: (id: string) => void | Promise<void>
   onRetryMissing: () => void
   onFullRefresh: () => void
   onFeedback: (item: Recommendation, sentiment: Sentiment) => Promise<void>
@@ -156,16 +160,46 @@ export function Workspace({ tripId, destination, preferences, profile, recommend
     }
   }
 
-  async function toggleChoice(item: Recommendation) {
-    if (item.category === 'hotel' || item.category === 'activity') { onToggle(item.id); return }
-    const existing = cart?.items.find((cartItem) => cartItem.recommendationId === item.id)
-    if (selections.includes(item.id)) {
-      if (existing) setCart(await api.removeCartItem(tripId, existing.id))
-      onToggle(item.id)
-      return
+  /** App persists the toggle and reverts on failure; the cart panel just needs the reason. */
+  function requestToggle(id: string) {
+    void Promise.resolve(onToggle(id)).catch((reason) => setCartError(userErrorMessage(reason, 'That choice could not be saved.')))
+  }
+
+  /* A removed cart item is the only way a transport or restaurant choice leaves the cart, so the
+     card must follow it. Hotels stay selected: a hotel can be chosen without an exact rate. */
+  function reconcileSelections(previous: TripCartModel | null, next: TripCartModel) {
+    const remaining = new Set(next.items.map((item) => item.recommendationId))
+    const dropped = new Set((previous?.items ?? []).map((item) => item.recommendationId).filter((id) => !remaining.has(id)))
+    for (const id of dropped) {
+      const item = recommendations.find((entry) => entry.id === id)
+      if (item && cartBackedCategories.has(item.category) && selections.includes(id)) requestToggle(id)
     }
-    if (!existing) setCart(await api.addCartItem(tripId, item.id, undefined, item.category === 'restaurant' ? 'restaurant' : 'ride'))
-    onToggle(item.id)
+  }
+
+  function applyCart(next: TripCartModel) {
+    reconcileSelections(cart, next); setCart(next); setCartError('')
+  }
+
+  async function toggleChoice(item: Recommendation) {
+    if (!cartBackedCategories.has(item.category)) { await onToggle(item.id); return }
+    const existing = cart?.items.find((cartItem) => cartItem.recommendationId === item.id)
+    try {
+      if (selections.includes(item.id)) {
+        if (existing) setCart(await api.removeCartItem(tripId, existing.id, cart?.version))
+      } else if (!existing) {
+        setCart(await api.addCartItem(tripId, item.id, undefined, item.category === 'restaurant' ? 'restaurant' : 'ride'))
+      }
+      setCartError('')
+    } catch (reason) {
+      if (reason instanceof ApiError && reason.code === 'CART_VERSION_CONFLICT') {
+        setCart(await api.cart(tripId).catch(() => cart))
+        setCartError(`${CART_REFRESHED_NOTICE} Try that choice again.`)
+      } else {
+        setCartError(userErrorMessage(reason, 'Your cart could not be updated, so that choice was left unchanged.'))
+      }
+      throw reason
+    }
+    await onToggle(item.id)
   }
 
   return <main className="wk-workspace">
@@ -220,10 +254,11 @@ export function Workspace({ tripId, destination, preferences, profile, recommend
           selected={selections.includes(item.id)}
           companions={companions}
           noted={noted[item.id] ?? null}
+          cart={cart}
           onSelect={() => toggleChoice(item)}
-          onInventorySelect={() => { if (!selections.includes(item.id)) onToggle(item.id) }}
+          onInventorySelect={() => { if (!selections.includes(item.id)) requestToggle(item.id) }}
           onFeedback={(sentiment) => recordFeedback(item, sentiment)}
-          onCartChange={(next) => { setCart(next); setCartError('') }}
+          onCartChange={applyCart}
         />)}</div> : <EmptyState
           title={researching ? 'This agent is still out exploring' : 'Nothing landed in this category'}
           detail={researching ? 'Results arrive independently, so you can browse while the others work.' : failed > 0 ? 'Retry the missing categories — completed picks stay where they are.' : 'Run a full refresh to search a wider route.'}
@@ -236,12 +271,12 @@ export function Workspace({ tripId, destination, preferences, profile, recommend
           <Chip tone="brand" icon={<Users aria-hidden />}>Balanced across {companions.length + 1} travellers</Chip>
           <p>Ranked for you and {companions.join(', ')} together.</p>
         </div>}
-        {selectedItems.length ? <div className="wk-docket__items">{selectedItems.map((item) => <button type="button" key={item.id} aria-label={`Remove ${item.name} from your docket`} onClick={() => void toggleChoice(item).catch((reason) => setCartError(userErrorMessage(reason, 'That choice could not be removed.')))}>
+        {selectedItems.length ? <div className="wk-docket__items">{selectedItems.map((item) => <button type="button" key={item.id} aria-label={`Remove ${item.name} from your docket`} onClick={() => void toggleChoice(item).catch(() => undefined)}>
           <span className="wk-docket__icon" aria-hidden>{item.category === 'restaurant' ? <Coffee /> : item.category === 'transport' ? <TrainFront /> : item.category === 'hotel' ? <BedDouble /> : <Bike />}</span>
           <div><strong>{item.name}</strong><small>{item.estimated_cost}</small></div>
           <span aria-hidden>×</span>
         </button>)}</div> : <p className="wk-docket__empty">Choose the options that feel right. One from each category is a good starting point.</p>}
-        <TripCart tripId={tripId} cart={cart} loading={cartLoading} error={cartError} onCartChange={(next) => { setCart(next); setCartError('') }} onError={setCartError} />
+        <TripCart tripId={tripId} cart={cart} loading={cartLoading} error={cartError} onCartChange={applyCart} onError={setCartError} />
         <div className="wk-docket__profile"><Mascot state="recommending" size="sm" /><p><strong>Profile influence</strong>{profile?.weights ? `${Math.round(profile.weights.spontaneity * 100)}% spontaneous · ${Object.entries(profile.weights.vibeWeights).sort((a, b) => Number(b[1]) - Number(a[1]))[0]?.[0] ?? 'personal'}-leaning` : profile?.traits ? `${Math.round(profile.traits.localVsTourist * 100)}% local-leaning · ${profile.traits.pace} pace` : 'Your profile is guiding every score.'}</p></div>
         <div className="wk-docket__stats">
           <span><Clock3 aria-hidden /> Pace check<b>{selections.length > 6 ? 'Full' : 'Balanced'}</b></span>

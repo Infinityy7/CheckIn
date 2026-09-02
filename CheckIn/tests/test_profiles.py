@@ -4,6 +4,8 @@ import sys
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import auth
@@ -175,3 +177,139 @@ An unhurried traveler who follows food and avoids crowded group experiences.
 
     assert reset_character_profile("profile-user") is True
     assert get_character_profile("profile-user") is None
+
+
+# --- durable guest intake ---
+
+def _intake_stub(calls: list, sketch: str):
+    async def fake_generate(prompt, **kwargs):
+        calls.append(prompt)
+        if kwargs.get("system_instruction") is None:
+            return sketch
+        return f"Q{sum(1 for entry in calls if 'next single message' in entry)}?"
+    return fake_generate
+
+
+def test_guest_intake_survives_restart_and_replays_duplicate_turns(tmp_path, monkeypatch):
+    import asyncio
+
+    import profiles
+
+    db.DB_PATH = tmp_path / "intake.db"
+    db.dispose_engine()
+    db.init_db()
+    calls: list[str] = []
+    monkeypatch.setattr(profiles, "generate_text", _intake_stub(calls, SKETCH_WITH_TASTE))
+    owner = "guest-owner"
+
+    reply, done = asyncio.run(profiles.chat_turn(owner, "", "Maya"))
+    assert (reply, done) == ("Q1?", False)
+    # the opener is idempotent: a second empty message replays the same question
+    assert asyncio.run(profiles.chat_turn(owner, "", "Maya")) == ("Q1?", False)
+    assert len(calls) == 1
+
+    profiles._chats.clear()  # a restart or another worker loses nothing
+    reply, done = asyncio.run(profiles.chat_turn(owner, "Slow mornings", "Maya", turn_key="turn-1"))
+    assert (reply, done) == ("Q2?", False)
+    before = len(calls)
+    assert asyncio.run(profiles.chat_turn(owner, "Slow mornings", "Maya", turn_key="turn-1")) == ("Q2?", False)
+    assert len(calls) == before
+
+    transcript = profiles.guest_chat_transcript(owner, "Maya")
+    assert [turn["from"] for turn in transcript["turns"]] == ["tavi", "user", "tavi"]
+    assert transcript["turns"][1]["text"] == "Slow mornings"
+    assert transcript["done"] is False
+
+    # a failed model turn leaves the answer stored once; the retry continues instead of appending
+    async def boom(*_args, **_kwargs):
+        raise RuntimeError("model down")
+
+    monkeypatch.setattr(profiles, "generate_text", boom)
+    with pytest.raises(RuntimeError):
+        asyncio.run(profiles.chat_turn(owner, "Street food", "Maya", turn_key="turn-2"))
+    monkeypatch.setattr(profiles, "generate_text", _intake_stub(calls, SKETCH_WITH_TASTE))
+    reply, done = asyncio.run(profiles.chat_turn(owner, "Street food", "Maya", turn_key="turn-2"))
+    assert (reply, done) == ("Q3?", False)
+    stored = db.get_profile_intake(owner, "cotraveller", "maya")["transcript"]
+    assert [entry["content"] for entry in stored if entry["role"] == "user"] == ["Slow mornings", "Street food"]
+
+    asyncio.run(profiles.chat_turn(owner, "Mid-range", "Maya", turn_key="turn-3"))
+    reply, done = asyncio.run(profiles.chat_turn(owner, "Early bird", "Maya", turn_key="turn-4"))
+    assert done is True
+    assert profiles.load_cotraveller(owner, "Maya") is not None
+    finished = profiles.guest_chat_transcript(owner, "Maya")
+    assert finished["done"] is True
+    assert len(finished["turns"]) == 8
+
+    # replaying the final answer neither re-generates the sketch nor appends
+    before = len(calls)
+    assert asyncio.run(profiles.chat_turn(owner, "Early bird", "Maya", turn_key="turn-4")) == (
+        profiles.INTAKE_DONE_MESSAGE, True,
+    )
+    assert asyncio.run(profiles.chat_turn(owner, "late answer", "Maya", turn_key="turn-9")) == (
+        profiles.INTAKE_DONE_MESSAGE, True,
+    )
+    assert len(calls) == before
+    assert len(profiles.guest_chat_transcript(owner, "Maya")["turns"]) == 8
+
+
+def test_self_chat_dedupes_by_turn_key(monkeypatch, tmp_path):
+    import asyncio
+
+    import profiles
+
+    db.DB_PATH = tmp_path / "self-chat.db"
+    db.dispose_engine()
+    db.init_db()
+    calls: list[str] = []
+    monkeypatch.setattr(profiles, "generate_text", _intake_stub(calls, SKETCH_WITH_TASTE))
+    profiles._chats.clear()
+
+    assert asyncio.run(profiles.chat_turn("self-user", "", None)) == ("Q1?", False)
+    first = asyncio.run(profiles.chat_turn("self-user", "Packed days", turn_key="s1"))
+    assert first == ("Q2?", False)
+    assert asyncio.run(profiles.chat_turn("self-user", "Packed days", turn_key="s1")) == first
+    assert len(calls) == 2
+    assert sum(1 for entry in profiles._chats["self-user"] if entry["role"] == "user") == 1
+
+
+def test_profile_chat_endpoints_persist_and_replay(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    import main
+    import profiles
+
+    db.DB_PATH = tmp_path / "chat-api.db"
+    db.dispose_engine()
+    db.init_db()
+    calls: list[str] = []
+    monkeypatch.setattr(profiles, "generate_text", _intake_stub(calls, SKETCH_WITH_TASTE))
+    client = TestClient(main.app)
+    registered = client.post("/api/auth/register", json={"email": "chat@example.com", "password": "safe-password-1"})
+    headers = {"Authorization": f"Bearer {registered.json()['token']}"}
+
+    empty = client.get("/api/profile/chat", params={"cotraveller_name": "Ravi"}, headers=headers)
+    assert empty.status_code == 200
+    assert empty.json() == {"turns": [], "done": False}
+    assert client.get("/api/profile/chat", headers=headers).status_code == 422
+
+    opener = client.post("/api/profile/chat", headers=headers, json={"message": "", "cotraveller_name": "Ravi"})
+    assert opener.json() == {"reply": "Q1?", "done": False}
+    answer = {"message": "Slow and curious", "cotraveller_name": "Ravi", "turn_key": "abc-123"}
+    first = client.post("/api/profile/chat", headers=headers, json=answer)
+    assert first.json() == {"reply": "Q2?", "done": False}
+    assert client.post("/api/profile/chat", headers=headers, json=answer).json() == first.json()
+    assert len(calls) == 2
+
+    profiles._chats.clear()
+    transcript = client.get("/api/profile/chat", params={"cotraveller_name": "Ravi"}, headers=headers)
+    assert transcript.json() == {
+        "turns": [
+            {"from": "tavi", "text": "Q1?"},
+            {"from": "user", "text": "Slow and curious"},
+            {"from": "tavi", "text": "Q2?"},
+        ],
+        "done": False,
+    }
+    too_long = client.post("/api/profile/chat", headers=headers, json={**answer, "turn_key": "x" * 129})
+    assert too_long.status_code == 422

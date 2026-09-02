@@ -14,10 +14,23 @@ interface TurnError {
   retryable: boolean
 }
 
+/** One submitted answer. The key is minted once and reused on every retry so the server never stores it twice. */
+interface PendingTurn {
+  message: string
+  turnKey?: string
+}
+
+function newTurnKey(): string {
+  const cryptoApi = globalThis.crypto
+  if (cryptoApi && typeof cryptoApi.randomUUID === 'function') return cryptoApi.randomUUID()
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`
+}
+
 /**
  * Four-question companion taste intake, one chat turn per answer.
- * The backend saves the sketch itself and answers done=true on the last turn;
- * resending the same message after a failure is safe.
+ * The thread lives on the server: on open it is restored, so a reload or a
+ * server restart resumes mid-conversation instead of starting over. The
+ * backend saves the sketch itself and answers done=true on the last turn.
  */
 export function CompanionIntake({ name, onProfiled, onClose }: {
   name: string
@@ -26,19 +39,21 @@ export function CompanionIntake({ name, onProfiled, onClose }: {
 }) {
   const [turns, setTurns] = useState<Turn[]>([])
   const [draft, setDraft] = useState('')
-  const [busy, setBusy] = useState(false)
+  const [busy, setBusy] = useState(true)
   const [done, setDone] = useState(false)
   const [error, setError] = useState<TurnError | null>(null)
-  const [pending, setPending] = useState<string | null>(null)
+  const [pending, setPending] = useState<PendingTurn | null>(null)
   const startedRef = useRef(false)
   const threadRef = useRef<HTMLDivElement>(null)
 
-  const deliver = async (message: string) => {
+  const deliver = async (turn: PendingTurn) => {
     setBusy(true)
     setError(null)
-    setPending(message)
+    setPending(turn)
     try {
-      const { reply, done: finished } = await api.profileChat(message, name)
+      const { reply, done: finished } = turn.turnKey
+        ? await api.profileChat(turn.message, name, turn.turnKey)
+        : await api.profileChat(turn.message, name)
       setTurns((previous) => [...previous, { from: 'tavi', text: reply }])
       setPending(null)
       if (finished) {
@@ -55,10 +70,27 @@ export function CompanionIntake({ name, onProfiled, onClose }: {
     }
   }
 
+  const restore = async () => {
+    const transcript = await api.profileChatTranscript(name)
+      .catch((): { turns: Turn[]; done: boolean } => ({ turns: [], done: false }))
+    setTurns(transcript.turns)
+    if (transcript.done) {
+      setDone(true)
+      setBusy(false)
+      return
+    }
+    const last = transcript.turns[transcript.turns.length - 1]
+    if (!last || last.from === 'user') {
+      await deliver({ message: '' })
+      return
+    }
+    setBusy(false)
+  }
+
   useEffect(() => {
     if (startedRef.current) return
     startedRef.current = true
-    void deliver('')
+    void restore()
   })
 
   useEffect(() => {
@@ -71,7 +103,7 @@ export function CompanionIntake({ name, onProfiled, onClose }: {
     if (!text || busy || done) return
     setTurns((previous) => [...previous, { from: 'user', text }])
     setDraft('')
-    void deliver(text)
+    void deliver({ message: text, turnKey: newTurnKey() })
   }
 
   return <Modal open title={`Taste intake · ${name}`} eyebrow="Travel party" onClose={onClose}>

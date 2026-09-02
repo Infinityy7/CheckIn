@@ -108,3 +108,48 @@ def test_unconfigured_provider_fails_closed_without_fake_inventory_or_secrets(tm
         assert "demo" not in response.text.lower()
     finally:
         main.app.dependency_overrides.clear()
+
+
+def test_cart_routes_expose_versions_and_reject_stale_removals(tmp_path):
+    db.DB_PATH = tmp_path / "inventory-versions.db"
+    db.dispose_engine()
+    db.init_db()
+    token = auth.register("versions@example.com", "safe-password-1")
+    user_id = db.get_user_by_email("versions@example.com")["user_id"]
+    state = _seed_trip(tmp_path, user_id)
+    main.app.dependency_overrides[get_inventory_service] = lambda: InventoryService(DemoProvider())
+    client = TestClient(main.app, raise_server_exceptions=False)
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        empty = client.get(f"/api/trip/{state.trip_id}/cart", headers=headers).json()
+        assert empty["version"] == 1
+
+        rate = client.get(f"/api/trip/{state.trip_id}/hotels/hotel-1/rates", headers=headers).json()["rooms"][0]["ratePlans"][0]
+        added = client.post(
+            f"/api/trip/{state.trip_id}/cart/items",
+            headers=headers,
+            json={"recommendationId": "hotel-1", "ratePlanId": rate["id"], "kind": "hotel"},
+        ).json()
+        assert added["version"] == 2
+        item_id = added["items"][0]["id"]
+
+        stale = client.delete(
+            f"/api/trip/{state.trip_id}/cart/items/{item_id}?expectedVersion=1",
+            headers={**headers, "X-Request-ID": "stale-cart"},
+        )
+        assert stale.status_code == 409
+        assert stale.json()["error"]["code"] == "CART_VERSION_CONFLICT"
+        assert stale.json()["error"]["retryable"] is True
+        assert stale.json()["error"]["request_id"] == "stale-cart"
+        assert stale.headers["X-Request-ID"] == "stale-cart"
+        assert client.get(f"/api/trip/{state.trip_id}/cart", headers=headers).json()["items"]
+
+        fresh = client.delete(f"/api/trip/{state.trip_id}/cart/items/{item_id}?expectedVersion=2", headers=headers)
+        assert fresh.status_code == 200
+        assert fresh.json()["version"] == 3
+        assert fresh.json()["items"] == []
+
+        missing = client.delete(f"/api/trip/{state.trip_id}/cart/items/{item_id}", headers=headers)
+        assert missing.status_code == 404
+    finally:
+        main.app.dependency_overrides.clear()

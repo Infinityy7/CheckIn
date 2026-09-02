@@ -28,9 +28,7 @@ logger = logging.getLogger(__name__)
 USER_QUESTIONS = 6
 COTRAVELLER_QUESTIONS = 4
 
-# in-flight intake conversations. key is user_id, or "user_id/slug"
-# for a co-traveller chat. lost on restart, which just means
-# the chat starts over — fine for a prototype
+# Legacy self-intake chat only; guest intakes persist in profile_intakes.
 _chats: dict[str, list[dict]] = {}
 
 INTAKE_DONE_MESSAGE = (
@@ -474,53 +472,31 @@ def _transcript(history: list[dict]) -> str:
     return "\n".join(lines)
 
 
-async def chat_turn(user_id: str, message: str, cotraveller_name: str | None = None) -> tuple[str, bool]:
-    """One turn of the intake conversation. Returns (reply, done).
+def _answer_count(history: list[dict]) -> int:
+    return sum(1 for msg in history if msg.get("role") == "user")
 
-    Send an empty message to start the chat and get the first question.
-    Once enough answers are in, the sketch gets written to disk and done=True.
-    """
-    key = user_id
-    if cotraveller_name:
-        key = user_id + "/" + slugify(cotraveller_name)
 
-    history = _chats.get(key)
-    if history is None:
-        history = []
-        _chats[key] = history
+def _replay(history: list[dict], turn_key: str | None) -> tuple[bool, str | None]:
+    """(seen, reply): seen=True when this turn_key is already stored; reply is what followed it."""
+    if not turn_key:
+        return False, None
+    for index, msg in enumerate(history):
+        if msg.get("role") == "user" and msg.get("turn_key") == turn_key:
+            following = history[index + 1] if index + 1 < len(history) else None
+            if following and following.get("role") == "assistant":
+                return True, following["content"]
+            return True, None
+    return False, None
 
-    if message.strip():
-        history.append({"role": "user", "content": message.strip()})
 
-    if cotraveller_name:
-        needed = COTRAVELLER_QUESTIONS
-        system = COTRAVELLER_SYSTEM.replace("{name}", cotraveller_name)
-    else:
-        needed = USER_QUESTIONS
-        system = INTAKE_SYSTEM
+def _user_turn(message: str, turn_key: str | None) -> dict:
+    turn: dict = {"role": "user", "content": message}
+    if turn_key:
+        turn["turn_key"] = turn_key
+    return turn
 
-    answers = 0
-    for msg in history:
-        if msg["role"] == "user":
-            answers += 1
 
-    if answers >= needed:
-        # enough answers — turn the conversation into a sketch
-        if cotraveller_name:
-            prompt = build_cotraveller_sketch_prompt(_transcript(history), cotraveller_name)
-        else:
-            prompt = build_sketch_prompt(_transcript(history))
-        sketch = await generate_text(prompt, cheap=True, max_tokens=2048, effort="low")
-
-        if cotraveller_name:
-            save_cotraveller(user_id, cotraveller_name, sketch)
-        else:
-            answers = [msg["content"] for msg in history if msg["role"] == "user"]
-            save_sketch(user_id, sketch, answers)
-        _chats.pop(key, None)
-        return INTAKE_DONE_MESSAGE, True
-
-    # otherwise ask the next question
+async def _next_question(history: list[dict], system: str) -> str:
     reply = await generate_text(
         "Conversation so far:\n" + (_transcript(history) or "(nothing yet — this is the start)")
         + "\n\nReply with your next single message.",
@@ -529,6 +505,112 @@ async def chat_turn(user_id: str, message: str, cotraveller_name: str | None = N
         max_tokens=1024,
         effort="low",
     )
-    reply = reply.strip()
+    return reply.strip()
+
+
+async def chat_turn(
+    user_id: str,
+    message: str,
+    cotraveller_name: str | None = None,
+    turn_key: str | None = None,
+) -> tuple[str, bool]:
+    """One turn of the intake conversation. Returns (reply, done).
+
+    Send an empty message to start the chat and get the first question. Once
+    enough answers are in, the sketch is saved and done=True. Resending a
+    ``turn_key`` replays the stored reply instead of appending a second answer.
+    """
+    message = message.strip()
+    turn_key = (turn_key or "").strip() or None
+    if cotraveller_name:
+        return await _guest_chat_turn(user_id, message, cotraveller_name, turn_key)
+    return await _self_chat_turn(user_id, message, turn_key)
+
+
+async def _self_chat_turn(user_id: str, message: str, turn_key: str | None) -> tuple[str, bool]:
+    history = _chats.setdefault(user_id, [])
+    seen, reply = _replay(history, turn_key)
+    if reply is not None:
+        return reply, False
+    if message and not seen:
+        history.append(_user_turn(message, turn_key))
+
+    if _answer_count(history) >= USER_QUESTIONS:
+        sketch = await generate_text(
+            build_sketch_prompt(_transcript(history)), cheap=True, max_tokens=2048, effort="low"
+        )
+        save_sketch(user_id, sketch, [msg["content"] for msg in history if msg["role"] == "user"])
+        _chats.pop(user_id, None)
+        return INTAKE_DONE_MESSAGE, True
+
+    reply = await _next_question(history, INTAKE_SYSTEM)
     history.append({"role": "assistant", "content": reply})
     return reply, False
+
+
+def _guest_intake(user_id: str, name: str) -> tuple[list[dict], str]:
+    row = db.get_profile_intake(user_id, "cotraveller", slugify(name))
+    if row is None:
+        return [], "not_started"
+    return list(row.get("transcript") or []), row.get("status") or "in_progress"
+
+
+def _save_guest_intake(user_id: str, name: str, history: list[dict], status: str = "in_progress") -> None:
+    db.save_profile_intake(
+        user_id,
+        {
+            "transcript": history,
+            "answers": {},
+            "current_question": _answer_count(history),
+            "status": status,
+        },
+        kind="cotraveller",
+        slug=slugify(name),
+    )
+
+
+async def _guest_chat_turn(
+    user_id: str, message: str, name: str, turn_key: str | None
+) -> tuple[str, bool]:
+    history, status = _guest_intake(user_id, name)
+    completed = status == "completed"
+    seen, reply = _replay(history, turn_key)
+    if reply is not None:
+        return reply, False
+    if completed:
+        if seen or message:
+            return INTAKE_DONE_MESSAGE, True
+        history = []
+    elif not message and not seen and history and history[-1].get("role") == "assistant":
+        return history[-1]["content"], False
+    if message and not seen:
+        history.append(_user_turn(message, turn_key))
+        _save_guest_intake(user_id, name, history)
+
+    if _answer_count(history) >= COTRAVELLER_QUESTIONS:
+        sketch = await generate_text(
+            build_cotraveller_sketch_prompt(_transcript(history), name),
+            cheap=True,
+            max_tokens=2048,
+            effort="low",
+        )
+        save_cotraveller(user_id, name, sketch)
+        _save_guest_intake(user_id, name, history, "completed")
+        return INTAKE_DONE_MESSAGE, True
+
+    reply = await _next_question(history, COTRAVELLER_SYSTEM.replace("{name}", name))
+    history.append({"role": "assistant", "content": reply})
+    _save_guest_intake(user_id, name, history)
+    return reply, False
+
+
+def guest_chat_transcript(user_id: str, name: str) -> dict:
+    """The saved guest thread in UI shape, so a reload or restart can resume it."""
+    history, status = _guest_intake(user_id, name)
+    return {
+        "turns": [
+            {"from": "tavi" if msg.get("role") == "assistant" else "user", "text": msg.get("content", "")}
+            for msg in history
+        ],
+        "done": status == "completed",
+    }

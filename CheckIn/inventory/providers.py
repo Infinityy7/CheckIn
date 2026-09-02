@@ -282,9 +282,28 @@ class DemoProvider:
             offer_id = f"demo-flight-{self._stable_number(f'{recommendation_id}:{index}', 100000, 999999)}"
             total = Money(amount=amount, currency="USD")
             self._flight_offers[offer_id] = total
+            carrier = ("Atlas Demo Air", "Northstar Demo", "Wayfinder Demo")[index]
+            return_leg: dict[str, Any] = {}
+            if return_date is not None:
+                return_depart_at = datetime.combine(
+                    return_date, time(10 + index * 3, 45), tzinfo=timezone.utc
+                )
+                return_duration = 150 + self._stable_number(
+                    f"{destination}:{origin}:{index}", 0, 420
+                )
+                return_leg = {
+                    "return_carrier": carrier,
+                    "return_flight_number": f"DM{310 + index}",
+                    "return_origin": destination_code,
+                    "return_destination": origin_code,
+                    "return_depart_at": return_depart_at,
+                    "return_arrive_at": return_depart_at + timedelta(minutes=return_duration),
+                    "return_duration_minutes": return_duration,
+                    "return_stops": 0 if index == 0 else 1,
+                }
             offers.append(FlightOffer(
                 id=offer_id,
-                carrier=("Atlas Demo Air", "Northstar Demo", "Wayfinder Demo")[index],
+                carrier=carrier,
                 flight_number=f"DM{210 + index}",
                 origin=origin_code,
                 destination=destination_code,
@@ -293,6 +312,7 @@ class DemoProvider:
                 duration_minutes=duration_minutes,
                 stops=0 if index == 0 else 1,
                 journey_type="round_trip" if return_date else "one_way",
+                **return_leg,
                 total=total,
                 quote_expires_at=now + timedelta(minutes=30),
                 availability_status=AvailabilityStatus.AVAILABLE,
@@ -881,13 +901,43 @@ def _normalize_flight_offer(raw: Any, *, source_mode: SourceMode) -> FlightOffer
     if not isinstance(raw, dict):
         raise ProviderDataError("Duffel returned a malformed flight offer.")
     slices = _required_list(raw, "slices")
-    first_slice = slices[0] if slices and isinstance(slices[0], dict) else {}
+    outbound = _normalize_flight_slice(slices[0] if slices else None, leg="outbound")
+    return_leg: dict[str, Any] = {}
+    if len(slices) > 1:
+        inbound = _normalize_flight_slice(slices[1], leg="return")
+        return_leg = {f"return_{field}": value for field, value in inbound.items()}
+    expires_at = _required_datetime(raw, "expires_at")
+    now = datetime.now(timezone.utc)
+    return FlightOffer(
+        id=_required_string(raw, "id"),
+        **outbound,
+        journey_type="round_trip" if len(slices) > 1 else "one_way",
+        **return_leg,
+        total=_money(raw, "total_amount", "total_currency"),
+        quote_expires_at=expires_at,
+        availability_status=(
+            AvailabilityStatus.EXPIRED if expires_at <= now else AvailabilityStatus.AVAILABLE
+        ),
+        source="duffel",
+        source_mode=source_mode,
+        is_live=source_mode == SourceMode.LIVE,
+        source_metadata={
+            "offer_request_id": raw.get("offer_request_id"),
+            "requires_instant_payment": _optional_dict(
+                raw.get("payment_requirements")
+            ).get("requires_instant_payment"),
+        },
+    )
+
+
+def _normalize_flight_slice(raw: Any, *, leg: str) -> dict[str, Any]:
+    slice_data = raw if isinstance(raw, dict) else {}
     segments = [
-        segment for segment in _optional_list(first_slice.get("segments"))
+        segment for segment in _optional_list(slice_data.get("segments"))
         if isinstance(segment, dict)
     ]
     if not segments:
-        raise ProviderDataError("Duffel flight offer did not contain segments.")
+        raise ProviderDataError(f"Duffel flight offer {leg} slice did not contain segments.")
     first, last = segments[0], segments[-1]
     depart_at = _required_datetime(first, "departing_at")
     arrive_at = _required_datetime(last, "arriving_at")
@@ -906,36 +956,16 @@ def _normalize_flight_offer(raw: Any, *, source_mode: SourceMode) -> FlightOffer
     flight_number = (
         f"{airline_code}{flight_number_value}" if flight_number_value is not None else None
     )
-    origin = _place_code(first.get("origin"))
-    destination = _place_code(last.get("destination"))
-    expires_at = _required_datetime(raw, "expires_at")
-    now = datetime.now(timezone.utc)
-    return FlightOffer(
-        id=_required_string(raw, "id"),
-        carrier=carrier,
-        flight_number=flight_number,
-        origin=origin,
-        destination=destination,
-        depart_at=depart_at,
-        arrive_at=arrive_at,
-        duration_minutes=max(0, round((arrive_at - depart_at).total_seconds() / 60)),
-        stops=max(0, len(segments) - 1),
-        journey_type="round_trip" if len(slices) > 1 else "one_way",
-        total=_money(raw, "total_amount", "total_currency"),
-        quote_expires_at=expires_at,
-        availability_status=(
-            AvailabilityStatus.EXPIRED if expires_at <= now else AvailabilityStatus.AVAILABLE
-        ),
-        source="duffel",
-        source_mode=source_mode,
-        is_live=source_mode == SourceMode.LIVE,
-        source_metadata={
-            "offer_request_id": raw.get("offer_request_id"),
-            "requires_instant_payment": _optional_dict(
-                raw.get("payment_requirements")
-            ).get("requires_instant_payment"),
-        },
-    )
+    return {
+        "carrier": carrier,
+        "flight_number": flight_number,
+        "origin": _place_code(first.get("origin")),
+        "destination": _place_code(last.get("destination")),
+        "depart_at": depart_at,
+        "arrive_at": arrive_at,
+        "duration_minutes": max(0, round((arrive_at - depart_at).total_seconds() / 60)),
+        "stops": max(0, len(segments) - 1),
+    }
 
 
 def _place_code(raw: Any) -> str:
