@@ -39,7 +39,7 @@ router_settings:
   # App owns retries — invariant.
   num_retries: 0
   # No fallbacks key on purpose: app-side fallback preserves native
-  # passthrough features (web_search, adaptive thinking, effort, pause_turn).
+  # passthrough features (web_search, thinking mode, effort, pause_turn).
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY

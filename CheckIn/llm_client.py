@@ -39,6 +39,7 @@ from config import (
     LLM_QUEUE_TIMEOUT_SECONDS,
     LLM_RETRY_BASE_DELAY_SECONDS,
     LLM_RETRY_MAX_DELAY_SECONDS,
+    LLM_THINKING_ENABLED,
     LLM_TIMEOUT_SECONDS,
 )
 
@@ -51,10 +52,9 @@ Effort = Literal["low", "medium", "high", "xhigh", "max"]
 # for models this application does not target.
 WEB_SEARCH_TOOL_TYPE = "web_search_20260209"
 
-# Adaptive thinking spends part of `max_tokens` before any visible text is
-# produced. A caller asking for a two-sentence answer must still leave room for
-# that, or the turn stops at the cap with an empty text block.
-MIN_MAX_TOKENS = 1024
+# Anthropic accepts small output caps when thinking is disabled. Keep the
+# normalization in one place so callers cannot accidentally send zero.
+MIN_MAX_TOKENS = 1
 
 # Appended to the system prompt when a caller needs machine-readable output.
 # Anthropic's structured outputs enforce a full JSON Schema; the schemas here
@@ -430,6 +430,23 @@ def _refusal_category(response: object) -> str:
     return str(getattr(details, "category", None) or "unspecified")
 
 
+def _model_controls(model: str, effort: Effort) -> dict:
+    """Return a valid low-latency request shape for each model generation.
+
+    Claude 4.5 models predate adaptive thinking and output effort. Omitting
+    both fields keeps thinking off; Claude 5 models require an explicit
+    disabled mode because adaptive thinking is otherwise on by default.
+    """
+    if "-4-5" in model.lower():
+        return {}
+    return {
+        "thinking": {
+            "type": "adaptive" if LLM_THINKING_ENABLED else "disabled"
+        },
+        "output_config": {"effort": effort},
+    }
+
+
 async def generate_text(
     prompt: str,
     system_instruction: str | None = None,
@@ -457,7 +474,8 @@ async def generate_text(
     so callers such as the research cache can record which model answered.
 
     Sampling temperature is not a parameter: the models this gateway targets
-    reject it. Use `effort` to trade depth against cost and latency instead.
+    reject it. Thinking is disabled by default for predictable latency; the
+    environment kill switch can restore adaptive mode for controlled tests.
     """
     global _account_blocked_code
     tools = (
@@ -505,9 +523,8 @@ async def generate_text(
             kwargs: dict = {
                 "model": model,
                 "max_tokens": max(max_tokens, MIN_MAX_TOKENS),
-                "thinking": {"type": "adaptive"},
-                "output_config": {"effort": effort},
             }
+            kwargs.update(_model_controls(model, effort))
             if system:
                 kwargs["system"] = system
             if tools:

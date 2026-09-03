@@ -38,7 +38,7 @@ Itinerary builds hold a ten-minute lease that is released before any awaited cle
 
 - JSON requests time out after 20 seconds and surface a safe retry message. Three
   endpoints wait on a model turn and get a longer budget: onboarding completion and
-  profile chat (90 seconds, because a thinking turn is legitimately slower than a read)
+  profile chat (90 seconds, including provider and gateway headroom)
   and trip creation (`TRIP_CREATE_TIMEOUT_MS`, 45 seconds), whose advisory feasibility
   check is itself bounded by `FEASIBILITY_TIMEOUT_SECONDS` (25 seconds, fail-open to
   `unchecked`). The client deadline is deliberately longer than the whole server-side
@@ -94,7 +94,7 @@ An optional self-hosted LiteLLM proxy can sit between the app and Anthropic, in 
 The split of responsibility is deliberate and non-overlapping:
 
 - The gateway owns provider key custody and virtual keys, per-key rate limits, the cross-worker concurrency cap, spend budgets, and request logging. When it is enabled, the app's per-process semaphores are skipped so concurrency limits cannot double.
-- The gateway does not do model fallback, retries, or caching for this app. Passthrough forwards requests byte-for-byte, which is what preserves server-side `web_search`, adaptive thinking, `output_config.effort`, and `pause_turn` resumption — but it bypasses LiteLLM's router, so gateway-side fallback and caching cannot be enabled without risking those features. That preservation is unverified without a live gateway, so the app keeps retries, fallback, and caching on its side.
+- The gateway does not do model fallback, retries, or caching for this app. Passthrough forwards requests byte-for-byte, preserving server-side `web_search`, the selected thinking mode, `output_config.effort`, and `pause_turn` resumption. It bypasses LiteLLM's router, so the app keeps retries, fallback, and its taste-aware research cache on its side.
 
 Retry ownership stays with the app: the `llm_client.generate_text` failover loop holds the entire retry budget. The Anthropic SDK runs with `max_retries=0`; the gateway ships with `litellm_settings.num_retries=0`, `router_settings.num_retries=0`, and no fallbacks configured.
 

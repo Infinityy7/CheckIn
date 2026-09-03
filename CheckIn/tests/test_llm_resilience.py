@@ -85,7 +85,7 @@ def test_primary_timeout_falls_back_once_and_requests_json(monkeypatch):
     fallback = calls[1]
     assert fallback["messages"] == [{"role": "user", "content": "hello"}]
     assert fallback["system"].endswith("markdown code fences.")
-    assert fallback["thinking"] == {"type": "adaptive"}
+    assert all(call["thinking"] == {"type": "disabled"} for call in calls)
     assert fallback["tools"] == [
         {
             "type": llm_client.WEB_SEARCH_TOOL_TYPE,
@@ -97,7 +97,7 @@ def test_primary_timeout_falls_back_once_and_requests_json(monkeypatch):
     assert "temperature" not in fallback
 
 
-def test_effort_and_token_floor_are_forwarded(monkeypatch):
+def test_effort_and_output_limit_are_forwarded_with_thinking_disabled(monkeypatch):
     calls: list[dict] = []
 
     async def create(**kwargs):
@@ -108,8 +108,28 @@ def test_effort_and_token_floor_are_forwarded(monkeypatch):
     asyncio.run(llm_client.generate_text("hello", max_tokens=16, effort="high"))
 
     assert calls[0]["output_config"] == {"effort": "high"}
-    # Adaptive thinking spends part of the cap before any visible text.
-    assert calls[0]["max_tokens"] == llm_client.MIN_MAX_TOKENS
+    assert calls[0]["thinking"] == {"type": "disabled"}
+    assert calls[0]["max_tokens"] == 16
+
+
+def test_thinking_can_be_deliberately_reenabled(monkeypatch):
+    calls: list[dict] = []
+
+    async def create(**kwargs):
+        calls.append(kwargs)
+        return _response()
+
+    monkeypatch.setattr(llm_client, "LLM_THINKING_ENABLED", True)
+    monkeypatch.setattr(llm_client._client.messages, "create", create)
+    asyncio.run(llm_client.generate_text("hello", effort="low"))
+
+    assert calls[0]["thinking"] == {"type": "adaptive"}
+
+
+def test_legacy_haiku_omits_unsupported_thinking_and_effort_fields():
+    controls = llm_client._model_controls("claude-haiku-4-5", "low")
+
+    assert controls == {}
 
 
 def test_paused_search_loop_resumes_within_its_budget(monkeypatch):

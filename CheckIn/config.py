@@ -51,8 +51,10 @@ LOG_LEVEL: str = os.environ.get("LOG_LEVEL", "INFO")
 
 # One place owns retries. The Anthropic SDK's automatic retries are disabled so
 # these limits cannot multiply invisibly across the client and the agents.
-# Adaptive thinking makes a single call slower than a non-reasoning model, so
-# the per-call deadline and the wall deadlines below are sized for it.
+# Thinking is disabled by default for predictable latency and token cost. Keep
+# a kill switch so controlled experiments can re-enable it without touching
+# every model call site.
+LLM_THINKING_ENABLED: bool = _bool_env("LLM_THINKING_ENABLED", "false")
 LLM_TIMEOUT_SECONDS: float = float(os.environ.get("LLM_TIMEOUT_SECONDS", "180"))
 LLM_QUEUE_TIMEOUT_SECONDS: float = float(
     os.environ.get("LLM_QUEUE_TIMEOUT_SECONDS", "12")
