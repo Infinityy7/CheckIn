@@ -47,7 +47,7 @@ from feasibility import check_feasibility
 from inventory.service import CartVersionConflict, exact_cart_choices
 from itinerary import generate_itinerary
 from llm_client import get_llm_health, is_fatal_error
-from orchestrator import ALL_AGENT_NAMES, generate_context_brief, run_agents_streaming
+from orchestrator import agents_for_scope, generate_context_brief, run_agents_streaming
 from personalization import (
     MAX_TAG_BATCH_DELTA,
     apply_weight_adjustments,
@@ -717,9 +717,10 @@ async def research_trip(
     does not have to wait for all 4 to complete.
     """
     state = _get_owned_trip(trip_id, user_id)
+    scoped_agents = agents_for_scope(state.preferences.scope)
     failed_agents = {
         name
-        for name in ALL_AGENT_NAMES
+        for name in scoped_agents
         if any(
             error.startswith(name)
             for error in (state.research_errors or [])
@@ -727,16 +728,16 @@ async def research_trip(
     }
     completed_agents = {
         result.agent_name for result in (state.research_results or [])
-        if result.agent_name in ALL_AGENT_NAMES
+        if result.agent_name in scoped_agents
     }.difference(failed_agents)
-    resume_partial = 0 < len(completed_agents) < len(ALL_AGENT_NAMES)
+    resume_partial = 0 < len(completed_agents) < len(scoped_agents)
     # A deliberate full refresh replaces every category: bypass the research
     # cache lookup but still store the fresh results.
-    full_refresh = len(completed_agents) == len(ALL_AGENT_NAMES)
+    full_refresh = len(completed_agents) == len(scoped_agents)
     target_agents = (
-        [name for name in ALL_AGENT_NAMES if name not in completed_agents]
+        [name for name in scoped_agents if name not in completed_agents]
         if resume_partial
-        else list(ALL_AGENT_NAMES)
+        else list(scoped_agents)
     )
     # taste profile: prose goes into the brief (light aim for the web
     # search), taste vectors go into the ranker (the heavy lifting)
@@ -809,8 +810,9 @@ async def research_trip(
                 elif event["event"] == "all_complete":
                     event["trip_id"] = trip_id
                     latest = get_trip(trip_id)
-                    event["available_categories"] = len(
-                        latest.research_results or []
+                    event["available_categories"] = sum(
+                        1 for result in (latest.research_results or [])
+                        if result.agent_name in scoped_agents
                     ) if latest else 0
 
                 yield _sse(event)

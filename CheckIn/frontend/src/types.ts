@@ -172,6 +172,8 @@ export interface TripCreateResult {
   feasibility?: FeasibilityReport
 }
 
+export type TripScope = 'transport' | 'hotel' | 'activity' | 'restaurant'
+
 export interface TripPreferences {
   destination: string
   origin: string
@@ -184,6 +186,8 @@ export interface TripPreferences {
   num_travelers: number
   cotravellers: string[]
   cotraveller_usernames: string[]
+  /** Parts of the trip to research; missing means every part. */
+  scope?: TripScope[]
 }
 
 export interface ScoreBreakdown {

@@ -89,7 +89,7 @@ main.planner :is(input, select, button):focus-visible {
 /* Sections */
 .planner .trip-form__grid { display: grid; grid-template-columns: 1fr 1fr 1.3fr; }
 .planner .form-section { min-width: 0; margin: 0; padding: 24px 28px 26px; border: 0; border-right: 1px solid var(--line); }
-.planner .form-section--party { grid-column: 3; grid-row: 1 / 3; border-right: 0; }
+.planner .form-section--party { grid-column: 3; grid-row: 1 / 4; border-right: 0; }
 .planner .form-section--wide { grid-column: 1 / 3; border-top: 1px solid var(--line); }
 .planner .form-section legend {
   display: flex;

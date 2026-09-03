@@ -78,6 +78,15 @@ Without the header the endpoint behaves as before: every request creates a trip.
 
 `APP_ENV=production` refuses the SQLite fallback when `DATABASE_URL` is empty, and `init_db()` refuses to start a PostgreSQL worker whose `alembic_version` differs from the code's migration head, so a partially deployed schema fails fast instead of at the first write.
 
+## Planning scope
+
+`TripPreferences.scope` says which parts of the trip CheckIn plans: a non-empty subset of `transport`, `hotel`, `activity`, `restaurant`, deduplicated and stored in that canonical order. It defaults to all four, so every older client, fixture, and stored trip behaves exactly as before; an unknown value or an empty list is a 422 with a plain message.
+
+- Research runs only the specialists for the chosen categories (`orchestrator.agents_for_scope`, backed by `AGENT_CATEGORIES`, agent name to category). The failed/completed sets, the partial-retry target, and the full-refresh detection are all computed against the scoped agents, so a stored result or error from an out-of-scope category never counts and cannot turn a first run into a "partial retry". `research_started.agents` and `available_categories` likewise cover only the scoped agents.
+- For a partial scope the deterministic context brief ends with "Planning scope: CheckIn is planning only ...; the traveler arranges the rest separately." That sentence enters the research cache's prompt fingerprint, so a flights-only trip never reads a cached row written for a full plan of the same facts.
+- The feasibility check skips the deterministic lodging-and-food floor when neither `hotel` nor `restaurant` is in scope (a small transport-only budget is not "unrealistic" on those grounds), and its prompt gains a "Planning scope" section so the model judges only what is being planned and budgeted.
+- The itinerary prompt gains the same section for partial scopes: the model must not invent hotels, restaurants, transport, or activities outside the scope and writes `free_time` placeholders such as "Traveler arranges lodging separately" instead. Itinerary validation is unchanged.
+
 ## LLM gateway topology
 
 An optional self-hosted LiteLLM proxy can sit between the app and Anthropic, in Anthropic-native passthrough mode only. When `LLM_GATEWAY_ENABLED=true`, the app's `AsyncAnthropic` client points its `base_url` at the gateway's `/anthropic` prefix and authenticates with a virtual key. Configuration lives in `gateway/litellm.config.yaml`; the container starts with `docker compose --profile gateway up`. The default is `LLM_GATEWAY_ENABLED=false`, which points the SDK directly at `api.anthropic.com` with the existing app-side resilience. Both paths pass the same test suite.

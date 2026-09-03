@@ -1,8 +1,9 @@
 import '../styles/workspace.css'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { AlertTriangle, ArrowRight, BedDouble, Bike, Check, ChevronRight, Clock3, Coffee, Map, RefreshCw, Sparkles, Star, ThumbsDown, ThumbsUp, TrainFront, Users, UtensilsCrossed } from 'lucide-react'
 import type { CharacterProfile, Recommendation, TripCart as TripCartModel, TripPreferences } from '../types'
 import { cacheInfo } from '../types'
+import { agentsForScope, scopeOf } from '../scope'
 import { ApiError, api, userErrorMessage } from '../services/api'
 import { Mascot } from './Mascot'
 import { Banner, Button, CachedBadge, Chip, EmptyState, Meter, Modal } from './UI'
@@ -124,16 +125,20 @@ export function Workspace({ tripId, destination, preferences, profile, recommend
   onFeedback: (item: Recommendation, sentiment: Sentiment) => Promise<void>
   onBuild: () => void
 }) {
-  const available = categories.filter((category) => recommendations.some((item) => item.category === category.id))
-  const [category, setCategory] = useState<string>(available[0]?.id ?? 'hotel')
+  const scope = scopeOf(preferences)
+  const scopedCategories = categories.filter((category) => scope.includes(category.id))
+  const available = scopedCategories.filter((category) => recommendations.some((item) => item.category === category.id))
+  const [category, setCategory] = useState<string>(() => (available[0] ?? scopedCategories.find((entry) => entry.id === 'hotel') ?? scopedCategories[0]).id)
+  const [pinnedTab, setPinnedTab] = useState(false)
+  const activeCategory = pinnedTab || !available.length || available.some((entry) => entry.id === category) ? category : available[0].id
   const [noted, setNoted] = useState<Record<string, Sentiment>>({})
   const [confirmingRefresh, setConfirmingRefresh] = useState(false)
   const [cart, setCart] = useState<TripCartModel | null>(null)
   const [cartLoading, setCartLoading] = useState(true)
   const [cartError, setCartError] = useState('')
 
-  const active = recommendations.filter((item) => item.category === category).sort((a, b) => a.rank - b.rank)
-  const agentEntries = Object.entries(agents)
+  const active = recommendations.filter((item) => item.category === activeCategory).sort((a, b) => a.rank - b.rank)
+  const agentEntries = Object.keys(agentsForScope(scope)).map((name) => [name, agents[name] ?? 'waiting'] as const)
   const completed = agentEntries.filter(([, status]) => status === 'complete').length
   const failed = agentEntries.filter(([, status]) => status === 'failed').length
   const allComplete = agentEntries.length > 0 && completed === agentEntries.length
@@ -211,12 +216,12 @@ export function Workspace({ tripId, destination, preferences, profile, recommend
       </div>
       <div className="wk-stage">
         <span role="status">{researching ? 'Research in motion' : failed ? 'Partial results ready' : 'Recommendations ready'}</span>
-        <b>{completed}/4 agents</b>
-        <div className="wk-stage__track"><i style={{ width: `${completed * 25}%` }} /></div>
+        <b>{completed}/{agentEntries.length} agents</b>
+        <div className="wk-stage__track"><i style={{ width: `${Math.round(100 * completed / Math.max(agentEntries.length, 1))}%` }} /></div>
       </div>
     </header>
 
-    <section className="wk-rail" aria-label="Research agents">
+    <section className="wk-rail" aria-label="Research agents" style={{ '--wk-agents': agentEntries.length } as CSSProperties}>
       {agentEntries.map(([name, status], index) => <div className={`wk-agent wk-agent--${status}`} key={name}>
         <span className="wk-agent__marker" aria-hidden>{status === 'complete' ? <Check /> : status === 'failed' ? <AlertTriangle /> : status === 'working' ? <i className="wk-pulse" /> : index + 1}</span>
         <div>
@@ -245,7 +250,7 @@ export function Workspace({ tripId, destination, preferences, profile, recommend
           <div><span className="eyebrow">Ranked for your character</span><h2>The shortlist</h2></div>
           {canFullRefresh && <Button variant="quiet" className="wk-refresh" onClick={() => setConfirmingRefresh(true)}><RefreshCw aria-hidden /> Full refresh</Button>}
         </div>
-        <div className="wk-tabs" role="tablist" aria-label="Recommendation categories">{categories.map(({ id, label, icon: Icon }) => <button type="button" role="tab" aria-selected={category === id} className={category === id ? 'is-active' : ''} key={id} onClick={() => setCategory(id)}><Icon aria-hidden />{label}<span>{recommendations.filter((item) => item.category === id).length}</span></button>)}</div>
+        <div className="wk-tabs" role="tablist" aria-label="Recommendation categories">{scopedCategories.map(({ id, label, icon: Icon }) => <button type="button" role="tab" aria-selected={activeCategory === id} className={activeCategory === id ? 'is-active' : ''} key={id} onClick={() => { setPinnedTab(true); setCategory(id) }}><Icon aria-hidden />{label}<span>{recommendations.filter((item) => item.category === id).length}</span></button>)}</div>
         {active.length ? <div className="wk-list">{active.map((item) => <RecommendationCard
           key={item.id}
           tripId={tripId}
@@ -287,7 +292,7 @@ export function Workspace({ tripId, destination, preferences, profile, recommend
     </div>
 
     <Modal open={confirmingRefresh && canFullRefresh} title="Refresh the whole shortlist?" eyebrow="Full refresh" onClose={() => setConfirmingRefresh(false)}>
-      <p className="wk-confirm__copy">This reruns research for all four categories against live sources. Every current recommendation is replaced and your current selections are cleared.</p>
+      <p className="wk-confirm__copy">This reruns research for every category in your plan against live sources. Every current recommendation is replaced and your current selections are cleared.</p>
       <div className="wk-confirm__actions">
         <Button variant="secondary" onClick={() => setConfirmingRefresh(false)}>Keep my shortlist</Button>
         <Button onClick={() => { setConfirmingRefresh(false); onFullRefresh() }}>Replace everything</Button>

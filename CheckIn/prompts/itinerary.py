@@ -13,11 +13,21 @@ Use exactly these rooms and flights. Never substitute a different room type, rat
 """
 
 
+def _scope_block(scope_note: str | None) -> str:
+    if not scope_note:
+        return ""
+    return f"""
+## Planning scope
+{scope_note} Do not invent hotels, restaurants, transport, or activities for anything outside this scope, and skip the rules below that concern those categories (for example hotel check-in or the transport strategy). Where a day needs a placeholder, add a short `free_time` item such as "Traveler arranges lodging separately" instead of a made-up recommendation.
+"""
+
+
 def build_itinerary_prompt(
     prefs_json: str,
     context_brief: str,
     selected_recommendations_json: str,
     exact_choices_json: str | None = None,
+    scope_note: str | None = None,
 ) -> str:
     """Return the user message for itinerary generation."""
     return f"""## Trip Context
@@ -29,7 +39,7 @@ def build_itinerary_prompt(
 ## Selected Recommendations
 The traveler has chosen the following from our expert agents' research:
 {selected_recommendations_json}
-{_exact_choices_block(exact_choices_json)}
+{_exact_choices_block(exact_choices_json)}{_scope_block(scope_note)}
 ## Your Task
 Create a detailed, day-by-day itinerary that weaves the selected recommendations into a coherent, enjoyable trip. You are an expert itinerary architect — think like a concierge who knows the destination intimately.
 

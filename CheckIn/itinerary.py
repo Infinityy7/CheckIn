@@ -12,7 +12,7 @@ from datetime import date, timedelta
 from config import ITINERARY_DEADLINE_SECONDS, MAX_AGENT_RETRIES
 from llm_client import LLMCapacityError, generate_text, is_fatal_error, parse_json_text
 from prompts.itinerary import build_itinerary_prompt
-from schemas import Itinerary, Recommendation, TripPreferences
+from schemas import Itinerary, Recommendation, TripPreferences, planning_scope_note
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +135,7 @@ async def _generate_itinerary(
         context_brief,
         recs_json,
         exact_choices_json=json.dumps(exact_choices, indent=2) if exact_choices else None,
+        scope_note=planning_scope_note(prefs.scope),
     )
 
     max_attempts = MAX_AGENT_RETRIES

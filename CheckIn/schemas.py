@@ -6,7 +6,7 @@ import re
 import uuid
 from datetime import date, datetime, timezone
 from enum import Enum
-from typing import Annotated, Any, Literal, Optional
+from typing import Annotated, Any, Iterable, Literal, Optional
 
 from pydantic import (
     BaseModel,
@@ -60,6 +60,33 @@ IDEMPOTENCY_KEY_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 CotravellerName = Annotated[str, StringConstraints(max_length=MAX_COTRAVELLER_NAME_LENGTH)]
 CotravellerUsername = Annotated[str, StringConstraints(max_length=40)]
 
+SCOPE_CATEGORIES = ("transport", "hotel", "activity", "restaurant")
+SCOPE_LABELS = {
+    "transport": "transport",
+    "hotel": "lodging",
+    "activity": "activities",
+    "restaurant": "dining",
+}
+
+
+def scope_labels(categories: Iterable[str]) -> str:
+    wanted = set(categories)
+    labels = [SCOPE_LABELS[item] for item in SCOPE_CATEGORIES if item in wanted]
+    if len(labels) <= 1:
+        return "".join(labels)
+    return ", ".join(labels[:-1]) + " and " + labels[-1]
+
+
+def planning_scope_note(scope: Iterable[str]) -> str | None:
+    """One sentence for model prompts when only part of the trip is being planned."""
+    chosen = set(scope)
+    if chosen >= set(SCOPE_CATEGORIES):
+        return None
+    return (
+        f"Planning scope: CheckIn is planning only {scope_labels(chosen)}; "
+        "the traveler arranges the rest separately."
+    )
+
 
 class TripPreferences(BaseModel):
     """User-submitted trip preferences that drive all agent research."""
@@ -89,6 +116,23 @@ class TripPreferences(BaseModel):
         default_factory=list,
         description="CheckIn usernames of account-holding co-travellers",
     )
+    scope: list[str] = Field(
+        default_factory=lambda: list(SCOPE_CATEGORIES),
+        description="Which parts of the trip CheckIn plans; defaults to the full trip",
+    )
+
+    @field_validator("scope")
+    @classmethod
+    def normalize_scope(cls, value: list[str]) -> list[str]:
+        chosen = list(dict.fromkeys(str(item).strip().lower() for item in value))
+        unknown = [item for item in chosen if item not in SCOPE_CATEGORIES]
+        if unknown:
+            raise ValueError(
+                f"Unknown planning scope {unknown}. Choose from: {', '.join(SCOPE_CATEGORIES)}"
+            )
+        if not chosen:
+            raise ValueError("Choose at least one thing to plan")
+        return [item for item in SCOPE_CATEGORIES if item in chosen]
 
     @model_validator(mode="after")
     def check_everything(self) -> "TripPreferences":

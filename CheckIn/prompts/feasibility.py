@@ -5,11 +5,20 @@ SYSTEM_PROMPT = """You are a travel planning realism assessor. Given a trip requ
 You are advisory, not a gatekeeper. Shoestring travel is legitimate: hostels, overnight buses, and street food make many cheap trips workable, so reserve "unrealistic" for requests where even the frugal version clearly does not fit — for example when realistic transport to the destination alone would exceed the entire budget. "tight" means doable only with real compromises the traveler should hear about. Do not moralize and do not comment on taste; judge only feasibility."""
 
 
-def build_user_prompt(prefs_json: str) -> str:
+def _scope_block(scope_note: str | None) -> str:
+    if not scope_note:
+        return ""
+    return f"""
+## Planning scope
+{scope_note} Judge only whether the budget covers what is being planned here; the parts the traveler arranges separately are paid for outside this budget and must not count against it.
+"""
+
+
+def build_user_prompt(prefs_json: str, scope_note: str | None = None) -> str:
     """Return the user message for the feasibility check."""
     return f"""## Trip request
 {prefs_json}
-
+{_scope_block(scope_note)}
 ## Your task
 Judge whether this request is achievable. If it is not (or only barely), propose the SMALLEST change that would make it workable, in this order of preference:
 1. A higher budget_amount (in the request's own currency) that realistically covers the trip as asked.

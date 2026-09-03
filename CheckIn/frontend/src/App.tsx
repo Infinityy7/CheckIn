@@ -3,6 +3,7 @@ import { Compass, LogOut, Plus, Sparkles, UserRound } from 'lucide-react'
 import './styles/shell.css'
 import { api, ApiError, userErrorMessage } from './services/api'
 import { clearTripDraft } from './services/tripDraft'
+import { agentsForScope, scopeOf } from './scope'
 import type { AgentHealth, CharacterProfile, FeasibilityReport, Itinerary, PendingCheckInTrip, Recommendation, StreamEvent, TripCreateResult, TripPreferences, TripState, User } from './types'
 import { AuthView } from './components/AuthView'
 import { Onboarding } from './components/Onboarding'
@@ -15,7 +16,6 @@ import { Banner, Brand, Button, ErrorState, LoadingState, Stepper, ThemeToggle }
 
 type Screen = 'planner' | 'workspace' | 'itinerary'
 const STAGES = ['Plan', 'Research', 'Itinerary'] as const
-const initialAgents: AgentStatus = { 'Accommodation Agent': 'waiting', 'Activities Agent': 'waiting', 'Restaurant Agent': 'waiting', 'Transport Agent': 'waiting' }
 const heldWithoutReport: FeasibilityReport = { verdict: 'unrealistic', confidence: 0, reason: 'This request was held for review before research.', suggestion_text: '', suggested_changes: {} }
 
 function streamErrorMessage(event: StreamEvent, fallback: string) {
@@ -38,7 +38,7 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>('planner')
   const [trip, setTrip] = useState<TripState | null>(null)
   const [recommendations, setRecommendations] = useState<Recommendation[]>([])
-  const [agents, setAgents] = useState<AgentStatus>(initialAgents)
+  const [agents, setAgents] = useState<AgentStatus>({})
   const [selections, setSelections] = useState<string[]>([])
   const [researching, setResearching] = useState(false)
   const [building, setBuilding] = useState(false)
@@ -84,15 +84,14 @@ export default function App() {
   }
 
   function hydrateTrip(state: TripState) {
-    const researched = Boolean(state.research_results?.length || state.research_errors?.length)
-    setTrip(state); setRecommendations(state.research_results?.flatMap((result) => result.recommendations) ?? []); setSelections(state.selections ?? [])
+    const restored = agentsForScope(scopeOf(state.preferences))
+    const results = (state.research_results ?? []).filter((result) => result.agent_name in restored)
+    const failures = (state.research_errors ?? []).flatMap((failure) => Object.keys(restored).filter((name) => failure.startsWith(name)))
+    const researched = results.length > 0 || failures.length > 0
+    setTrip(state); setRecommendations(results.flatMap((result) => result.recommendations)); setSelections(state.selections ?? [])
     setItinerary(state.itinerary ?? null); setScreen(state.itinerary ? 'itinerary' : researched ? 'workspace' : 'planner')
-    const restored: AgentStatus = { ...initialAgents }
-    for (const result of state.research_results ?? []) restored[result.agent_name] = 'complete'
-    for (const failure of state.research_errors ?? []) {
-      const agent = Object.keys(restored).find((name) => failure.startsWith(name))
-      if (agent) restored[agent] = 'failed'
-    }
+    for (const result of results) restored[result.agent_name] = 'complete'
+    for (const agent of failures) restored[agent] = 'failed'
     setAgents(restored)
   }
 
@@ -119,7 +118,7 @@ export default function App() {
 
   async function beginResearch(tripId: string, preferences: TripPreferences) {
     const state: TripState = { trip_id: tripId, preferences }
-    setTrip(state); setRecommendations([]); setSelections([]); setItinerary(null); setAgents(initialAgents); setScreen('workspace')
+    setTrip(state); setRecommendations([]); setSelections([]); setItinerary(null); setAgents(agentsForScope(scopeOf(preferences))); setScreen('workspace')
     await runResearch(tripId)
   }
 

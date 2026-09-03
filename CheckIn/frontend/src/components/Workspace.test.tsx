@@ -1,5 +1,5 @@
 import { act, type ComponentProps } from 'react'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { Workspace, type AgentStatus } from './Workspace'
 import type { HotelAvailability, Recommendation, TripCart, TripPreferences } from '../types'
 import { ApiError, api } from '../services/api'
@@ -58,8 +58,8 @@ const twoRates: HotelAvailability = {
 
 type WorkspaceProps = ComponentProps<typeof Workspace>
 
-function renderWorkspace(overrides: Partial<WorkspaceProps> = {}) {
-  const props: WorkspaceProps = {
+function baseProps(overrides: Partial<WorkspaceProps> = {}): WorkspaceProps {
+  return {
     tripId: 'trip-1',
     destination: 'Kyoto',
     preferences,
@@ -76,6 +76,10 @@ function renderWorkspace(overrides: Partial<WorkspaceProps> = {}) {
     onBuild: vi.fn(),
     ...overrides,
   }
+}
+
+function renderWorkspace(overrides: Partial<WorkspaceProps> = {}) {
+  const props = baseProps(overrides)
   render(<Workspace {...props} />)
   return props
 }
@@ -335,4 +339,40 @@ it('selects an exact flight without also creating a generic transport cart item'
   expect(add).toHaveBeenCalledWith('trip-1', 'transport-1', 'offer-1', 'flight')
   expect(onToggle).toHaveBeenCalledWith('transport-1')
   expect(await screen.findByRole('button', { name: /Added/i })).toBeDisabled()
+})
+
+it('shows only the in-scope agents and tabs for a two-part plan', async () => {
+  renderWorkspace({
+    preferences: { ...preferences, scope: ['transport', 'hotel'] },
+    agents: { 'Transport Agent': 'complete', 'Accommodation Agent': 'waiting', 'Restaurant Agent': 'complete' },
+    recommendations: [transport, recommendation, restaurant],
+  })
+  await settle()
+
+  expect(screen.getByText('1/2 agents')).toBeInTheDocument()
+  expect(document.querySelector('.wk-stage__track i')).toHaveStyle({ width: '50%' })
+  const rail = within(screen.getByRole('region', { name: 'Research agents' }))
+  expect(rail.getByText('Transport')).toBeInTheDocument()
+  expect(rail.getByText('Accommodation')).toBeInTheDocument()
+  expect(rail.queryByText('Activities')).not.toBeInTheDocument()
+  expect(rail.queryByText('Restaurant')).not.toBeInTheDocument()
+  expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Transportation1', 'Stays1'])
+  expect(screen.getByRole('tab', { name: /Transportation/ })).toHaveAttribute('aria-selected', 'true')
+  expect(screen.getByRole('button', { name: /Build my itinerary/i })).toBeInTheDocument()
+})
+
+it('follows the first category with results until the traveller picks a tab', async () => {
+  const restaurant: Recommendation = { ...recommendation, id: 'restaurant-1', name: 'Kappo Sora', category: 'restaurant' }
+  const { rerender } = render(<Workspace {...baseProps({ recommendations: [] })} />)
+  await settle()
+  expect(screen.getByRole('tab', { name: /Stays/ })).toHaveAttribute('aria-selected', 'true')
+
+  rerender(<Workspace {...baseProps({ recommendations: [restaurant] })} />)
+  await waitFor(() => expect(screen.getByRole('tab', { name: /Food/ })).toHaveAttribute('aria-selected', 'true'))
+  expect(screen.getByText('Kappo Sora')).toBeInTheDocument()
+
+  fireEvent.click(screen.getByRole('tab', { name: /Activities/ }))
+  rerender(<Workspace {...baseProps({ recommendations: [restaurant, recommendation] })} />)
+  await settle()
+  expect(screen.getByRole('tab', { name: /Activities/ })).toHaveAttribute('aria-selected', 'true')
 })

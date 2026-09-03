@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { TripForm } from './TripForm'
 import { api, ApiError } from '../services/api'
 import { TRIP_DRAFT_KEY } from '../services/tripDraft'
@@ -37,6 +37,9 @@ function fillRoute() {
   fireEvent.change(screen.getByLabelText(/destination/i), { target: { value: 'Kyoto, Japan' } })
   fireEvent.change(screen.getByLabelText(/starting from/i), { target: { value: 'Mumbai, India' } })
 }
+
+const planGroup = () => within(screen.getByRole('group', { name: /what should we plan/i }))
+const SCOPE_LABELS = ['Flights & transport', 'Stays', 'Activities', 'Food']
 
 beforeEach(() => localStorage.clear())
 afterEach(() => vi.restoreAllMocks())
@@ -300,5 +303,89 @@ it('renders no feasibility warning by default', async () => {
   mockOverview([])
   render(<TripForm onSubmit={vi.fn()} busy={false} />)
   expect(screen.queryByText(/won’t fit its budget/i)).not.toBeInTheDocument()
+  await settled()
+})
+
+it('plans the full trip by default and submits every scope in canonical order', async () => {
+  mockOverview([])
+  const onSubmit = vi.fn()
+  render(<TripForm onSubmit={onSubmit} busy={false} />)
+  await settled()
+
+  const plan = planGroup()
+  expect(plan.getByRole('button', { name: 'Full trip' })).toHaveAttribute('aria-pressed', 'true')
+  for (const label of SCOPE_LABELS) expect(plan.getByRole('button', { name: label })).toHaveAttribute('aria-pressed', 'true')
+  expect(screen.queryByText(/ only$/)).not.toBeInTheDocument()
+
+  fillRoute()
+  fireEvent.click(screen.getByRole('button', { name: /research my trip/i }))
+  await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+  expect(onSubmit.mock.calls[0][0].scope).toEqual(['transport', 'hotel', 'activity', 'restaurant'])
+})
+
+it('submits only the parts left selected and summarises them in Tavi’s read', async () => {
+  mockOverview([])
+  const onSubmit = vi.fn()
+  render(<TripForm onSubmit={onSubmit} busy={false} />)
+  await settled()
+
+  const plan = planGroup()
+  fireEvent.click(plan.getByRole('button', { name: 'Food' }))
+  fireEvent.click(plan.getByRole('button', { name: 'Activities' }))
+  expect(plan.getByRole('button', { name: 'Full trip' })).toHaveAttribute('aria-pressed', 'false')
+  expect(plan.getByRole('button', { name: 'Food' })).toHaveAttribute('aria-pressed', 'false')
+  expect(screen.getByText(/flights & stays only/)).toBeInTheDocument()
+
+  fillRoute()
+  fireEvent.click(screen.getByRole('button', { name: /research my trip/i }))
+  await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+  expect(onSubmit.mock.calls[0][0].scope).toEqual(['transport', 'hotel'])
+})
+
+it('blocks research until at least one part is picked, keeps canonical order, and Full trip restores all four', async () => {
+  mockOverview([])
+  const onSubmit = vi.fn()
+  render(<TripForm onSubmit={onSubmit} busy={false} />)
+  await settled()
+  fillRoute()
+
+  const plan = planGroup()
+  for (const label of SCOPE_LABELS) fireEvent.click(plan.getByRole('button', { name: label }))
+  expect(screen.getByRole('button', { name: /research my trip/i })).toBeDisabled()
+  expect(screen.getByText('Pick at least one thing to plan.')).toBeInTheDocument()
+
+  fireEvent.click(plan.getByRole('button', { name: 'Food' }))
+  fireEvent.click(plan.getByRole('button', { name: 'Flights & transport' }))
+  expect(screen.getByRole('button', { name: /research my trip/i })).toBeEnabled()
+  expect(screen.queryByText('Pick at least one thing to plan.')).not.toBeInTheDocument()
+  expect(screen.getByText(/flights & food only/)).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: /research my trip/i }))
+  await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+  expect(onSubmit.mock.calls[0][0].scope).toEqual(['transport', 'restaurant'])
+
+  fireEvent.click(plan.getByRole('button', { name: 'Full trip' }))
+  expect(plan.getByRole('button', { name: 'Full trip' })).toHaveAttribute('aria-pressed', 'true')
+  for (const label of SCOPE_LABELS) expect(plan.getByRole('button', { name: label })).toHaveAttribute('aria-pressed', 'true')
+  fireEvent.click(screen.getByRole('button', { name: /research my trip/i }))
+  await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2))
+  expect(onSubmit.mock.calls[1][0].scope).toEqual(['transport', 'hotel', 'activity', 'restaurant'])
+})
+
+it('restores a saved scope from the draft and fills a missing one with the full trip', async () => {
+  mockOverview([])
+  localStorage.setItem(TRIP_DRAFT_KEY, JSON.stringify({ form: { destination: 'Lisbon' }, guests: [] }))
+  const first = render(<TripForm onSubmit={vi.fn()} busy={false} />)
+  expect(planGroup().getByRole('button', { name: 'Full trip' })).toHaveAttribute('aria-pressed', 'true')
+  await settled()
+  first.unmount()
+
+  localStorage.setItem(TRIP_DRAFT_KEY, JSON.stringify({ form: { destination: 'Lisbon', scope: ['restaurant', 'hotel', 'bogus'] }, guests: [] }))
+  render(<TripForm onSubmit={vi.fn()} busy={false} />)
+  const plan = planGroup()
+  expect(plan.getByRole('button', { name: 'Full trip' })).toHaveAttribute('aria-pressed', 'false')
+  expect(plan.getByRole('button', { name: 'Stays' })).toHaveAttribute('aria-pressed', 'true')
+  expect(plan.getByRole('button', { name: 'Food' })).toHaveAttribute('aria-pressed', 'true')
+  expect(plan.getByRole('button', { name: 'Flights & transport' })).toHaveAttribute('aria-pressed', 'false')
+  expect(screen.getByText(/stays & food only/)).toBeInTheDocument()
   await settled()
 })

@@ -24,6 +24,7 @@ from schemas import (
     FeasibilityReport,
     SuggestedChanges,
     TripPreferences,
+    planning_scope_note,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,8 @@ def _trip_days(prefs: TripPreferences) -> int:
 
 
 def _floor_check(prefs: TripPreferences) -> FeasibilityReport | None:
+    if not {"hotel", "restaurant"}.intersection(prefs.scope):
+        return None
     rate = CURRENCY_TO_USD.get(prefs.currency)
     if not rate:
         return None
@@ -128,7 +131,9 @@ async def check_feasibility(prefs: TripPreferences) -> FeasibilityReport:
     try:
         async with asyncio.timeout(FEASIBILITY_TIMEOUT_SECONDS):
             raw_text = await generate_text(
-                build_user_prompt(prefs.model_dump_json(indent=2)),
+                build_user_prompt(
+                    prefs.model_dump_json(indent=2), planning_scope_note(prefs.scope)
+                ),
                 system_instruction=SYSTEM_PROMPT,
                 max_tokens=1000,
                 cheap=True,

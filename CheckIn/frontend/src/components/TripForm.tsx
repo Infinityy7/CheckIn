@@ -1,8 +1,9 @@
 import '../styles/planner.css'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ArrowRight, CalendarDays, CircleDollarSign, LoaderCircle, MapPin, Navigation, Sparkles, Users } from 'lucide-react'
-import type { FeasibilityReport, TripPreferences } from '../types'
+import { ArrowRight, CalendarDays, CircleDollarSign, ListChecks, LoaderCircle, MapPin, Navigation, Sparkles, Users } from 'lucide-react'
+import type { FeasibilityReport, TripPreferences, TripScope } from '../types'
 import { loadTripDraft, saveTripDraft } from '../services/tripDraft'
+import { ALL_SCOPES, canonicalScope, SCOPE_OPTIONS } from '../scope'
 import { Mascot } from './Mascot'
 import { Banner, Button, SegmentedControl } from './UI'
 import { CompanionManager } from './CompanionManager'
@@ -22,7 +23,7 @@ function defaultForm(): TripPreferences {
   return {
     destination: '', origin: '', start_date: isoDate(30), end_date: isoDate(36), budget_amount: 2200,
     currency: 'USD', vibes: ['culture', 'food', 'nature'], group_type: 'couple', num_travelers: 2,
-    cotravellers: [], cotraveller_usernames: [],
+    cotravellers: [], cotraveller_usernames: [], scope: [...ALL_SCOPES],
   }
 }
 
@@ -59,6 +60,10 @@ export function TripForm({ onSubmit, busy, feasibility, onProceedAnyway, onDismi
   const duration = useMemo(() => Math.max(1, Math.round((new Date(form.end_date).getTime() - new Date(form.start_date).getTime()) / 86400000) + 1), [form.start_date, form.end_date])
   const set = <K extends keyof TripPreferences>(key: K, value: TripPreferences[K]) => setForm((current) => ({ ...current, [key]: value }))
   const toggleVibe = (vibe: string) => set('vibes', form.vibes.includes(vibe) ? form.vibes.filter((item) => item !== vibe) : [...form.vibes, vibe])
+  const scope = form.scope ?? ALL_SCOPES
+  const fullTrip = ALL_SCOPES.every((id) => scope.includes(id))
+  const toggleScope = (id: TripScope) => set('scope', ALL_SCOPES.filter((item) => item === id ? !scope.includes(id) : scope.includes(item)))
+  const scopeRead = fullTrip || !scope.length ? '' : ` · ${SCOPE_OPTIONS.filter((option) => scope.includes(option.id)).map((option) => option.read).join(' & ')} only`
 
   const setGroup = (group: TripPreferences['group_type']) => setForm((current) => ({
     ...current,
@@ -86,7 +91,7 @@ export function TripForm({ onSubmit, busy, feasibility, onProceedAnyway, onDismi
   ].filter(Boolean).join(' · '), [usernames.length, guests.length])
 
   const gate = solo ? [] : blockers
-  const blocked = busy || !form.vibes.length || gate.length > 0
+  const blocked = busy || !form.vibes.length || !scope.length || gate.length > 0
 
   const hasSuggestion = Boolean(
     feasibility?.suggested_changes.budget_amount
@@ -110,6 +115,7 @@ export function TripForm({ onSubmit, busy, feasibility, onProceedAnyway, onDismi
     num_travelers: solo ? 1 : form.num_travelers,
     cotravellers: solo ? [] : guests,
     cotraveller_usernames: solo ? [] : usernames,
+    scope: canonicalScope(scope),
   })
   const submit = (send: (preferences: TripPreferences) => void | Promise<void>) => {
     saveTripDraft({ form, guests })
@@ -186,6 +192,14 @@ export function TripForm({ onSubmit, busy, feasibility, onProceedAnyway, onDismi
             />}
         </fieldset>
         <fieldset className="form-section form-section--wide">
+          <legend><ListChecks aria-hidden /> What should we plan?</legend>
+          <div className="tag-cloud">
+            <button type="button" className={fullTrip ? 'is-active' : ''} aria-pressed={fullTrip} onClick={() => set('scope', [...ALL_SCOPES])}>Full trip</button>
+            {SCOPE_OPTIONS.map(({ id, label }) => <button type="button" key={id} className={scope.includes(id) ? 'is-active' : ''} aria-pressed={scope.includes(id)} onClick={() => toggleScope(id)}>{label}</button>)}
+          </div>
+          <small>Tavi researches only what you pick here — you arrange the rest.</small>
+        </fieldset>
+        <fieldset className="form-section form-section--wide">
           <legend><Sparkles aria-hidden /> What should this trip feel like?</legend>
           <div className="tag-cloud">
             {VIBES.map((vibe) => <button type="button" key={vibe} className={form.vibes.includes(vibe) ? 'is-active' : ''} aria-pressed={form.vibes.includes(vibe)} onClick={() => toggleVibe(vibe)}>{vibe}</button>)}
@@ -194,7 +208,8 @@ export function TripForm({ onSubmit, busy, feasibility, onProceedAnyway, onDismi
       </div>
       <footer className="trip-form__footer">
         <div>
-          <p><strong>Tavi’s read:</strong> {form.vibes.slice(0, 3).join(', ') || 'open-ended'} · {form.group_type} · {duration} days{!solo && partyLabel ? ` · ${partyLabel}` : ''}</p>
+          <p><strong>Tavi’s read:</strong> {form.vibes.slice(0, 3).join(', ') || 'open-ended'} · {form.group_type} · {duration} days{scopeRead}{!solo && partyLabel ? ` · ${partyLabel}` : ''}</p>
+          {!scope.length && <p className="gate-note" role="status">Pick at least one thing to plan.</p>}
           {gate.length > 0 && <p className="gate-note" role="status">
             Waiting on taste profiles: {gate.join(' · ')}. Guests can be profiled right here with “Profile now” — linked members finish their own intake in their account.
           </p>}

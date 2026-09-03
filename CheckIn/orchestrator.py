@@ -18,7 +18,7 @@ from config import (
 )
 from llm_client import generate_text, is_fatal_error
 from prompts.context_brief import build_context_brief_prompt
-from schemas import AgentResult, TripPreferences
+from schemas import AgentResult, TripPreferences, planning_scope_note
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,17 @@ _AGENT_TYPES = (
     RestaurantAgent,
     TransportAgent,
 )
-ALL_AGENT_NAMES = tuple(agent_type().agent_name for agent_type in _AGENT_TYPES)
+AGENT_CATEGORIES: dict[str, str] = {
+    agent.agent_name: agent.default_category
+    for agent in (agent_type() for agent_type in _AGENT_TYPES)
+}
+ALL_AGENT_NAMES = tuple(AGENT_CATEGORIES)
+
+
+def agents_for_scope(scope: Iterable[str]) -> list[str]:
+    """Specialists for the chosen planning categories, in canonical order."""
+    wanted = set(scope)
+    return [name for name in ALL_AGENT_NAMES if AGENT_CATEGORIES[name] in wanted]
 
 
 @dataclass(frozen=True)
@@ -66,6 +76,9 @@ def build_fallback_context_brief(
     if cotraveller_sketches:
         notes = " | ".join(_compact(sketch, 300) for sketch in cotraveller_sketches)
         brief += f" Co-traveler preferences: {notes}."
+    scope_note = planning_scope_note(prefs.scope)
+    if scope_note:
+        brief += f" {scope_note}"
     return brief
 
 

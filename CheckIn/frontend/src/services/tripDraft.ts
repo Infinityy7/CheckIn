@@ -1,3 +1,4 @@
+import { scopeOf } from '../scope'
 import type { TripPreferences } from '../types'
 
 export const TRIP_DRAFT_KEY = 'travelbuddy.tripDraft.v1'
@@ -13,7 +14,7 @@ export function loadTripDraft(): TripDraft | null {
     if (!raw) return null
     const parsed = JSON.parse(raw) as Partial<TripDraft> | null
     if (!parsed || typeof parsed !== 'object' || !parsed.form || typeof parsed.form !== 'object') return null
-    return { form: parsed.form, guests: Array.isArray(parsed.guests) ? parsed.guests.filter((guest): guest is string => typeof guest === 'string') : [] }
+    return { form: { ...parsed.form, scope: scopeOf(parsed.form) }, guests: Array.isArray(parsed.guests) ? parsed.guests.filter((guest): guest is string => typeof guest === 'string') : [] }
   } catch { return null }
 }
 

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import App from './App'
 import { api, ApiError } from './services/api'
 import { TRIP_DRAFT_KEY } from './services/tripDraft'
@@ -304,5 +304,59 @@ describe('selections and itinerary', () => {
     fireEvent.click(screen.getByRole('button', { name: /build my itinerary/i }))
     expect(await screen.findByRole('heading', { name: 'Kyoto Between Lanterns' })).toBeInTheDocument()
     expect(api.trip).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('planning scope', () => {
+  const journey: Recommendation = { ...hotel, id: 'transport-1', name: 'Complete journey', category: 'transport' }
+  const rail = () => within(screen.getByRole('region', { name: 'Research agents' }))
+
+  it('hydrates a transport-only trip with just the Transport Agent and ignores out-of-scope results', async () => {
+    mockSession({
+      trip_id: 'trip-flights', preferences: { ...preferences, scope: ['transport'] }, selections: [],
+      research_results: [{ agent_name: 'Transport Agent', recommendations: [journey] }, { agent_name: 'Accommodation Agent', recommendations: [hotel] }],
+      research_errors: ['Restaurant Agent could not finish this search. You can retry safely.'],
+    })
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'The shortlist' })).toBeInTheDocument()
+    expect(screen.getByText('1/1 agents')).toBeInTheDocument()
+    expect(rail().getByText('Transport')).toBeInTheDocument()
+    expect(rail().getByText('complete')).toBeInTheDocument()
+    expect(rail().queryByText('Accommodation')).not.toBeInTheDocument()
+    expect(rail().queryByText('Restaurant')).not.toBeInTheDocument()
+    expect(screen.queryByText(/needs another try/)).not.toBeInTheDocument()
+    expect(screen.getAllByRole('tab')).toHaveLength(1)
+    expect(screen.getByRole('tab', { name: /transportation/i })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('heading', { name: 'Complete journey' })).toBeInTheDocument()
+    expect(screen.queryByText('A quiet Kyoto stay')).not.toBeInTheDocument()
+  })
+
+  it('begins research with only the scoped agents and sends the scope in canonical order', async () => {
+    mockSession()
+    const createTrip = vi.spyOn(api, 'createTrip').mockResolvedValueOnce(received)
+    const stream = deferred<void>()
+    vi.spyOn(api, 'research').mockImplementation((_id, onEvent) => { onEvent({ event: 'agent_started', agent: 'Transport Agent' }); return stream.promise })
+    vi.spyOn(api, 'trip').mockResolvedValue({ trip_id: 'trip-new', preferences: { ...preferences, scope: ['transport', 'hotel'] }, research_results: [{ agent_name: 'Transport Agent', recommendations: [journey] }], selections: [] })
+    await openPlanner()
+    fillTokyoTrip()
+    const plan = within(screen.getByRole('group', { name: /what should we plan/i }))
+    fireEvent.click(plan.getByRole('button', { name: 'Food' }))
+    fireEvent.click(plan.getByRole('button', { name: 'Activities' }))
+
+    fireEvent.click(submitButton())
+    expect(await screen.findByRole('heading', { name: 'The shortlist' })).toBeInTheDocument()
+    expect(createTrip.mock.calls[0][0].scope).toEqual(['transport', 'hotel'])
+    expect(screen.getByText('0/2 agents')).toBeInTheDocument()
+    expect(rail().getByText('working')).toBeInTheDocument()
+    expect(rail().getByText('Transport')).toBeInTheDocument()
+    expect(rail().getByText('Accommodation')).toBeInTheDocument()
+    expect(rail().queryByText('Activities')).not.toBeInTheDocument()
+    expect(rail().queryByText('Restaurant')).not.toBeInTheDocument()
+    expect(screen.getAllByRole('tab')).toHaveLength(2)
+
+    await act(async () => stream.resolve())
+    expect(await screen.findByText('1/2 agents')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Complete journey' })).toBeInTheDocument()
   })
 })
