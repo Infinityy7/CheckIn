@@ -8,9 +8,21 @@ import { CompanionIntake } from './CompanionIntake'
 
 export const MAX_COMPANIONS = 8
 
-/** Mirror of the backend cotraveller slug rule: lowercase, non-alphanumeric runs → '-', trimmed. */
+function fnv1a32(text: string): string {
+  let digest = 0x811c9dc5
+  for (const byte of new TextEncoder().encode(text)) {
+    digest ^= byte
+    digest = Math.imul(digest, 0x01000193) >>> 0
+  }
+  return digest.toString(16).padStart(8, '0')
+}
+
+/** Mirror of profiles.slugify: ASCII slug, or a stable per-name fallback when the name has no ASCII letters or digits. */
 export function slugifyName(name: string): string {
-  return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  const cleaned = name.trim().toLowerCase()
+  const slug = cleaned.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  if (slug) return slug
+  return cleaned ? `guest-${fnv1a32(cleaned)}` : 'someone'
 }
 
 /** null = lookup failed (unverified); undefined/missing = still verifying. */

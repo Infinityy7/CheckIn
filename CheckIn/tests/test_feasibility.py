@@ -142,3 +142,18 @@ def test_slow_model_fails_open_inside_the_configured_deadline(monkeypatch):
 
     assert report.verdict == "unchecked"
     assert elapsed < deadline + 0.5
+
+
+def test_non_finite_or_boolean_suggested_budgets_are_dropped(monkeypatch):
+    for bad in (float("inf"), True):
+        _stub_llm(monkeypatch, {
+            "verdict": "tight",
+            "confidence": 0.6,
+            "reason": "Flights eat most of this budget.",
+            "suggestion_text": "Raise it.",
+            "suggested_changes": {"budget_amount": bad},
+        })
+        report = asyncio.run(feasibility.check_feasibility(_prefs()))
+        assert report.verdict == "tight"
+        assert report.suggested_changes.budget_amount is None
+        assert report.model_dump(mode="json")["suggested_changes"]["budget_amount"] is None

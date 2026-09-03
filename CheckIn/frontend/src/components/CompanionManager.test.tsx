@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { CompanionManager } from './CompanionManager'
+import { CompanionManager, slugifyName } from './CompanionManager'
 import { api, ApiError } from '../services/api'
 import type { CompanionLink, UserLookup } from '../types'
 
@@ -89,4 +89,13 @@ it('reports a failed invitation without changing the member state', async () => 
   expect(screen.getByText('@sam · not invited yet')).toBeInTheDocument()
   expect(screen.getByRole('button', { name: 'Invite' })).toBeInTheDocument()
   await waitFor(() => expect(lastBlockers(onBlocked)).toEqual(['@sam (needs an invitation)']))
+})
+
+it('mirrors the backend slug rule, including the fallback for names without ASCII letters', () => {
+  expect(slugifyName('My Mom!')).toBe('my-mom')
+  expect(slugifyName('Zoë Müller')).toBe('zo-m-ller')
+  expect(slugifyName('李雷')).toBe('guest-34eb561f')
+  expect(slugifyName('Зоя')).toBe('guest-44b54532')
+  expect(slugifyName('李雷')).not.toBe(slugifyName('Зоя'))
+  expect(slugifyName('   ')).toBe('someone')
 })

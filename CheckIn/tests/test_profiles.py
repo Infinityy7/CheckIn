@@ -313,3 +313,43 @@ def test_profile_chat_endpoints_persist_and_replay(tmp_path, monkeypatch):
     }
     too_long = client.post("/api/profile/chat", headers=headers, json={**answer, "turn_key": "x" * 129})
     assert too_long.status_code == 422
+
+
+def test_self_chat_replays_the_completed_final_turn_without_a_second_sketch(monkeypatch, tmp_path):
+    import asyncio
+
+    import profiles
+
+    db.DB_PATH = tmp_path / "self-chat-final.db"
+    db.dispose_engine()
+    db.init_db()
+    calls: list[str] = []
+    monkeypatch.setattr(profiles, "generate_text", _intake_stub(calls, SKETCH_WITH_TASTE))
+    profiles._chats.clear()
+    profiles._completed_self_turns.clear()
+    auth.register("final@example.com", "safe-password-1")
+    user_id = db.get_user_by_email("final@example.com")["user_id"]
+
+    asyncio.run(profiles.chat_turn(user_id, "", None))
+    for index in range(1, profiles.USER_QUESTIONS + 1):
+        reply, done = asyncio.run(profiles.chat_turn(user_id, f"answer {index}", turn_key=f"k{index}"))
+    assert done is True
+    sketch_calls = len(calls)
+    version = db.get_profile(user_id, "self")["version"]
+
+    replay = asyncio.run(profiles.chat_turn(user_id, f"answer {profiles.USER_QUESTIONS}", turn_key=f"k{profiles.USER_QUESTIONS}"))
+    assert replay == (reply, True)
+    assert len(calls) == sketch_calls
+    assert db.get_profile(user_id, "self")["version"] == version
+    assert user_id not in profiles._chats
+
+    profiles.reset_intake(user_id)
+    assert user_id not in profiles._completed_self_turns
+
+
+def test_slugify_keeps_distinct_non_ascii_names_apart():
+    assert slugify("李雷") == "guest-34eb561f"
+    assert slugify("Зоя") == "guest-44b54532"
+    assert slugify("李雷") != slugify("Зоя")
+    assert slugify("Zoë Müller") == "zo-m-ller"
+    assert slugify("  ") == "someone"

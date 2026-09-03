@@ -27,6 +27,10 @@ class ItineraryAlreadyRunning(RuntimeError):
     """Raised when another healthy worker is already generating this itinerary."""
 
 
+class ItineraryInputsChanged(RuntimeError):
+    """Raised when selections or saved choices changed while an itinerary was being built."""
+
+
 class ItineraryLeaseLost(RuntimeError):
     """Raised when a stale worker tries to save an itinerary after its lease moved on."""
 
@@ -285,6 +289,10 @@ def set_itinerary(trip_id: str, itinerary: Itinerary, lease_id: str, fingerprint
     def update(state: dict) -> None:
         if state.get("itinerary_lease_id") != lease_id:
             raise ItineraryLeaseLost("This itinerary run was replaced by a newer one")
+        if selection_fingerprint(state) != fingerprint:
+            raise ItineraryInputsChanged(
+                "Selections or saved choices changed while the itinerary was being built"
+            )
         state["itinerary"] = payload
         state["itinerary_fingerprint"] = fingerprint
 

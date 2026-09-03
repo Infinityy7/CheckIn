@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
+import unicodedata
 from datetime import date, timedelta
 
 from config import ITINERARY_DEADLINE_SECONDS, MAX_AGENT_RETRIES
@@ -37,7 +39,9 @@ class ItineraryOmittedSelections(ItineraryValidationError):
 
 
 def _normalize(text: str) -> str:
-    return " ".join(text.lower().split())
+    decomposed = unicodedata.normalize("NFKD", text)
+    ascii_only = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", ascii_only.lower()).split())
 
 
 def missing_recommendations(itinerary: Itinerary, selected: list[Recommendation]) -> list[str]:

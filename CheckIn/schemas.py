@@ -353,7 +353,7 @@ class ChatInput(BaseModel):
     """POST body for one turn of the profile intake chat."""
     message: str = Field("", max_length=2000)
     cotraveller_name: Optional[str] = Field(
-        None, description="Set to build a co-traveller's sketch instead of the user's"
+        None, max_length=120, description="Set to build a co-traveller's sketch instead of the user's"
     )
     turn_key: Optional[str] = Field(
         None,

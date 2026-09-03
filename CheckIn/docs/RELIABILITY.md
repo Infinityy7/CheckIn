@@ -32,6 +32,8 @@ The backend keeps the last valid result for each category while a replacement is
 
 Itinerary generation holds a ten-minute lease per trip (`itinerary_in_progress`, `itinerary_started_at`, `itinerary_lease_id`). A second build while the lease is live gets HTTP 409 with code `ITINERARY_IN_PROGRESS`, so two tabs cannot double-spend a model call or overwrite each other. Each stored itinerary carries a fingerprint of the inputs it was built from: the sorted selection IDs plus the exact hotel rate and flight offer IDs saved in the cart. Saving a different selection set, or adding or removing an exact rate or offer, clears the itinerary; a rebuild with an unchanged fingerprint replays the stored plan (the `itinerary_complete` event carries `"replayed": true`) and makes no model call. Passive saved-cart expiry does not delete an itinerary, but the fingerprint no longer matches, so the next build regenerates rather than replaying. The plan itself is validated after parsing: dates must cover the trip exactly, day numbers must be in order, every day needs items, categories are controlled, and every selected recommendation must appear; a rejected plan is retried once with the specific reason before `itinerary_failed` is streamed.
 
+Itinerary builds hold a ten-minute lease that is released before any awaited cleanup, so a browser that disconnects mid-build never locks the trip; a build whose selections or saved cart choices changed while the model was working is discarded with `ITINERARY_INPUTS_CHANGED` instead of being stored against the old inputs.
+
 ## Retry rules
 
 - JSON requests time out after 20 seconds and surface a safe retry message. Three

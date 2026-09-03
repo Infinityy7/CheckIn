@@ -835,3 +835,19 @@ def test_unavailable_provider_and_unknown_demo_ids_fail_closed():
         run(demo.revalidate_hotel_rate("unknown-rate"))
     with pytest.raises(ProviderItemUnavailableError):
         run(demo.revalidate_flight_offer("unknown-offer"))
+
+
+def test_demo_same_day_round_trip_never_returns_before_the_outbound_lands():
+    provider = DemoProvider(clock=lambda: NOW)
+    inventory = run(provider.search_flight_inventory(
+        recommendation_id="same-day",
+        origin="Mumbai",
+        destination="Goa",
+        departure_date=date(2026, 9, 12),
+        return_date=date(2026, 9, 12),
+        adults=1,
+    ))
+    assert inventory.offers
+    for offer in inventory.offers:
+        assert offer.return_depart_at >= offer.arrive_at + timedelta(hours=2)
+        assert offer.return_arrive_at > offer.return_depart_at

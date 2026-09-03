@@ -285,8 +285,9 @@ class DemoProvider:
             carrier = ("Atlas Demo Air", "Northstar Demo", "Wayfinder Demo")[index]
             return_leg: dict[str, Any] = {}
             if return_date is not None:
-                return_depart_at = datetime.combine(
-                    return_date, time(10 + index * 3, 45), tzinfo=timezone.utc
+                return_depart_at = max(
+                    datetime.combine(return_date, time(10 + index * 3, 45), tzinfo=timezone.utc),
+                    arrive_at + timedelta(hours=2),
                 )
                 return_duration = 150 + self._stable_number(
                     f"{destination}:{origin}:{index}", 0, 420

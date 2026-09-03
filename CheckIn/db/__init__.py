@@ -198,6 +198,11 @@ def _prepare_legacy_sqlite_schema(engine: Engine) -> list[dict[str, Any]]:
                     connection.exec_driver_sql(ddl)
             _backfill_usernames(connection)
 
+        if "trips" in tables:
+            trip_columns = {column["name"] for column in inspector.get_columns("trips")}
+            if "idempotency_key" not in trip_columns:
+                connection.exec_driver_sql("ALTER TABLE trips ADD COLUMN idempotency_key VARCHAR(160)")
+
         if "profiles" in tables:
             profile_columns = {column["name"] for column in inspector.get_columns("profiles")}
             if "character_md" not in profile_columns:
@@ -254,6 +259,9 @@ def _finish_legacy_sqlite_schema(engine: Engine, legacy_profiles: list[dict[str,
         )
         connection.exec_driver_sql(
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_username_lower ON users (lower(username))"
+        )
+        connection.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_trips_user_idempotency ON trips (user_id, idempotency_key)"
         )
         for row in legacy_profiles:
             weights = _json_object(row.get("taste_json")) if row.get("taste_json") else None
@@ -1206,14 +1214,21 @@ def list_companion_links(user_id: str) -> dict[str, list[dict[str, Any]]]:
         }
 
 
+class CompanionLinkNotPending(RuntimeError):
+    """Accept needs a pending invitation; decline needs a pending or accepted one."""
+
+
 def respond_companion_link(link_id: str, invitee_id: str, status: str) -> dict | None:
-    """The invitee accepts or declines. None when the link is missing or not addressed to them."""
+    """The invitee accepts or declines a pending invitation. None when missing or not addressed to them."""
     if status not in ("accepted", "declined"):
         raise ValueError("status must be 'accepted' or 'declined'")
     with Session(_connect()) as session, session.begin():
         row = session.get(CompanionLink, link_id)
         if row is None or row.invitee_user_id != invitee_id:
             return None
+        allowed = ("pending",) if status == "accepted" else ("pending", "accepted")
+        if row.status not in allowed:
+            raise CompanionLinkNotPending(f"invitation is {row.status}; cannot mark it {status}")
         row.status = status
         row.responded_at = utc_now()
         session.flush()

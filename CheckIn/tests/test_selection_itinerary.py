@@ -302,3 +302,70 @@ def test_exact_choices_are_rendered_into_the_model_prompt(monkeypatch):
     prompts.clear()
     asyncio.run(itinerary_module.generate_itinerary(prefs, "brief", selected))
     assert "## Exact booked/quoted choices" not in prompts[0]
+
+
+def test_client_disconnect_releases_the_itinerary_lease(tmp_path, monkeypatch):
+    trip_id, headers = _seed(tmp_path, "disconnect")
+    set_selections(trip_id, ["hotel-1"])
+
+    async def never_finishes(*_args, **_kwargs):
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(main, "generate_itinerary", never_finishes)
+
+    async def drive():
+        first_chunk = asyncio.Event()
+
+        async def receive():
+            await first_chunk.wait()
+            return {"type": "http.disconnect"}
+
+        async def send(message):
+            if message["type"] == "http.response.body" and message.get("body"):
+                first_chunk.set()
+
+        scope = {
+            "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "POST",
+            "scheme": "http", "path": f"/api/trip/{trip_id}/itinerary",
+            "raw_path": f"/api/trip/{trip_id}/itinerary".encode(), "query_string": b"", "root_path": "",
+            "headers": [(b"authorization", headers["Authorization"].encode()), (b"host", b"testserver")],
+            "client": ("127.0.0.1", 4321), "server": ("testserver", 80),
+        }
+        try:
+            await asyncio.wait_for(main.app(scope, receive, send), timeout=10)
+        except Exception:
+            pass
+
+    asyncio.run(drive())
+
+    raw = db.load_trip_state(trip_id)
+    assert raw["itinerary_in_progress"] is False
+    assert raw.get("itinerary_lease_id") is None
+    assert start_itinerary(trip_id)
+
+
+def test_selection_change_during_the_build_discards_the_stale_itinerary(tmp_path, monkeypatch):
+    trip_id, headers = _seed(tmp_path, "midbuild")
+    client = TestClient(main.app, raise_server_exceptions=False)
+    client.post(f"/api/trip/{trip_id}/select", headers=headers, json={"selections": ["hotel-1"]})
+
+    async def changes_selections_midway(*_args, **_kwargs):
+        set_selections(trip_id, ["hotel-1", "restaurant-1"])
+        return _plan()
+
+    monkeypatch.setattr(main, "generate_itinerary", changes_selections_midway)
+    stale = client.post(f"/api/trip/{trip_id}/itinerary", headers=headers)
+    assert stale.status_code == 200
+    assert '"code": "ITINERARY_INPUTS_CHANGED"' in stale.text
+    assert '"event": "itinerary_complete"' not in stale.text
+    raw = db.load_trip_state(trip_id)
+    assert raw.get("itinerary") is None
+    assert raw["itinerary_in_progress"] is False
+
+    async def fine(*_args, **_kwargs):
+        return _plan()
+
+    monkeypatch.setattr(main, "generate_itinerary", fine)
+    fresh = client.post(f"/api/trip/{trip_id}/itinerary", headers=headers)
+    assert '"event": "itinerary_complete"' in fresh.text
+    assert db.load_trip_state(trip_id)["itinerary_fingerprint"] == selection_fingerprint(db.load_trip_state(trip_id))

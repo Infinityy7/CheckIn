@@ -287,3 +287,24 @@ def test_companion_link_storage_invariants(tmp_path):
     assert db.respond_companion_link("missing", "someone", "accepted") is None
     assert db.delete_companion_link("missing", "someone") is None
     assert db.companion_link_status("a", "b") == "none"
+
+
+def test_only_pending_invitations_can_be_answered(client, party):
+    organizer, member = party["organizer"], party["member"]
+    link = invite(client, organizer, "member")
+
+    assert client.delete(f"/api/companions/links/{link['link_id']}", headers=organizer).status_code == 200
+    revived = client.post(f"/api/companions/links/{link['link_id']}/accept", headers=member)
+    assert revived.status_code == 409
+    assert db.get_companion_link_by_id(link["link_id"])["status"] == "revoked"
+    assert db.companion_link_status(party["organizer_id"], party["member_id"]) == "revoked"
+
+    again = invite(client, organizer, "member")
+    assert again["link_id"] == link["link_id"]
+    assert again["status"] == "pending"
+    assert respond(client, member, link["link_id"], "accept")["status"] == "accepted"
+    assert client.post(f"/api/companions/links/{link['link_id']}/accept", headers=member).status_code == 409
+    assert respond(client, member, link["link_id"], "decline")["status"] == "declined"
+    assert client.post(f"/api/companions/links/{link['link_id']}/accept", headers=member).status_code == 409
+    assert client.post(f"/api/companions/links/{link['link_id']}/decline", headers=member).status_code == 409
+    assert db.companion_link_status(party["organizer_id"], party["member_id"]) == "declined"

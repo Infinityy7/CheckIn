@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from datetime import timedelta
 
 from config import FEASIBILITY_CHECK_ENABLED, FEASIBILITY_TIMEOUT_SECONDS
@@ -85,7 +86,12 @@ def _sanitize(data: dict, prefs: TripPreferences) -> FeasibilityReport:
     raw_changes = data.get("suggested_changes")
     if verdict != "ok" and isinstance(raw_changes, dict):
         budget = raw_changes.get("budget_amount")
-        if isinstance(budget, (int, float)) and budget > 0:
+        if (
+            isinstance(budget, (int, float))
+            and not isinstance(budget, bool)
+            and math.isfinite(budget)
+            and budget > 0
+        ):
             changes.budget_amount = float(budget)
         try:
             candidate = SuggestedChanges(

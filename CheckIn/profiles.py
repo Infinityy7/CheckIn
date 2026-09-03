@@ -30,6 +30,7 @@ COTRAVELLER_QUESTIONS = 4
 
 # Legacy self-intake chat only; guest intakes persist in profile_intakes.
 _chats: dict[str, list[dict]] = {}
+_completed_self_turns: dict[str, str] = {}
 
 INTAKE_DONE_MESSAGE = (
     "That's everything I needed — I've got a solid picture now. Let's plan something great!"
@@ -38,9 +39,24 @@ INTAKE_DONE_MESSAGE = (
 
 # --- storage (SQLite via db.py) ---
 
+def _fnv1a32(text: str) -> str:
+    digest = 0x811C9DC5
+    for byte in text.encode("utf-8"):
+        digest ^= byte
+        digest = (digest * 0x01000193) & 0xFFFFFFFF
+    return f"{digest:08x}"
+
+
 def slugify(name: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
-    return slug or "someone"
+    """ASCII slug; names with no ASCII letters or digits get a stable per-name fallback.
+
+    Mirrored by slugifyName in frontend/src/components/CompanionManager.tsx.
+    """
+    cleaned = name.strip().lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", cleaned).strip("-")
+    if slug:
+        return slug
+    return f"guest-{_fnv1a32(cleaned)}" if cleaned else "someone"
 
 
 def load_sketch(user_id: str) -> str | None:
@@ -301,6 +317,7 @@ def reset_intake(user_id: str) -> bool:
     had_draft = db.delete_profile_intake(user_id)
     deleted = db.delete_profile(user_id, "self", "self")
     _chats.pop(user_id, None)
+    _completed_self_turns.pop(user_id, None)
     return had_draft or deleted
 
 
@@ -528,6 +545,8 @@ async def chat_turn(
 
 
 async def _self_chat_turn(user_id: str, message: str, turn_key: str | None) -> tuple[str, bool]:
+    if turn_key and _completed_self_turns.get(user_id) == turn_key:
+        return INTAKE_DONE_MESSAGE, True
     history = _chats.setdefault(user_id, [])
     seen, reply = _replay(history, turn_key)
     if reply is not None:
@@ -541,6 +560,8 @@ async def _self_chat_turn(user_id: str, message: str, turn_key: str | None) -> t
         )
         save_sketch(user_id, sketch, [msg["content"] for msg in history if msg["role"] == "user"])
         _chats.pop(user_id, None)
+        if turn_key:
+            _completed_self_turns[user_id] = turn_key
         return INTAKE_DONE_MESSAGE, True
 
     reply = await _next_question(history, INTAKE_SYSTEM)

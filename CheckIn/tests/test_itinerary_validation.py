@@ -202,3 +202,17 @@ def test_unparseable_output_keeps_the_short_output_hint(monkeypatch):
 
     assert result.days[0].date == "2026-10-12"
     assert "invalid or incomplete" in prompts[1]
+
+
+def test_selected_names_match_despite_punctuation_and_diacritics():
+    selected = [_rec("restaurant", "L'Atelier de Joël"), _rec("hotel", "Sowaka-Gion")]
+    plan = Itinerary(
+        trip_title="Kyoto",
+        trip_summary="Calm.",
+        days=[_day(1, "2026-10-12", [
+            _item("Dinner at L’Atelier de Joel", category="restaurant"),
+            _item("Check in at Sowaka Gion", category="accommodation"),
+        ])],
+    )
+    assert missing_recommendations(plan, selected) == []
+    assert missing_recommendations(plan, [_rec("activity", "Fushimi Inari")]) == ["Fushimi Inari"]

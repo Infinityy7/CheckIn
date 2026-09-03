@@ -73,6 +73,7 @@ from schemas import (
 from schemas import IDEMPOTENCY_KEY_PATTERN, CreateTripInput, FeasibilityReport
 from store import get_trip_by_idempotency_key
 from store import ItineraryAlreadyRunning, finish_itinerary, selection_fingerprint, start_itinerary
+from store import ItineraryInputsChanged
 from store import (
     ResearchAlreadyRunning,
     add_agent_result,
@@ -340,7 +341,13 @@ def _respond_to_companion_link(link_id: str, user_id: str, status: str) -> dict:
         raise HTTPException(
             status_code=403, detail="Only the invited traveler can respond to this invitation"
         )
-    updated = db.respond_companion_link(link_id, user_id, status)
+    try:
+        updated = db.respond_companion_link(link_id, user_id, status)
+    except db.CompanionLinkNotPending as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="This invitation is no longer open. Ask the organizer to invite you again.",
+        ) from exc
     return _companion_link_view(updated or link, user_id)
 
 
@@ -409,7 +416,7 @@ async def profile_chat(body: ChatInput, user_id: str = Depends(auth.get_current_
 
 @app.get("/api/profile/chat")
 async def profile_chat_transcript(
-    cotraveller_name: str = Query(..., min_length=1, max_length=160),
+    cotraveller_name: str = Query(..., min_length=1, max_length=120),
     user_id: str = Depends(auth.get_current_user),
 ) -> dict:
     """The saved guest intake thread, so a reload or server restart resumes it."""
@@ -945,6 +952,18 @@ async def generate_trip_itinerary(
                 "event": "itinerary_complete",
                 "itinerary": itinerary.model_dump(mode="json"),
             })
+        except ItineraryInputsChanged:
+            logger.info("Trip %s: selections changed during the build; itinerary discarded", trip_id)
+            yield _sse(api_errors.stream_problem(
+                request,
+                event="itinerary_failed",
+                code="ITINERARY_INPUTS_CHANGED",
+                message=(
+                    "Your selections changed while the itinerary was being built, so it was "
+                    "discarded. Build again to include the latest choices."
+                ),
+                retryable=True,
+            ))
         except Exception as exc:
             logger.error(
                 "[%s] Itinerary generation failed: %s",
@@ -963,10 +982,12 @@ async def generate_trip_itinerary(
                 retryable=not is_fatal_error(exc),
             ))
         finally:
+            # Release before any await: a client disconnect cancels this
+            # generator on every tick, so nothing after an await is reliable.
+            finish_itinerary(trip_id, lease_id)
             if not task.done():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
-            finish_itinerary(trip_id, lease_id)
 
     return StreamingResponse(
         event_stream(),
